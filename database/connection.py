@@ -28,8 +28,18 @@ class DatabaseConnection:
             await self.db.command("ping")
             return True
         except Exception as e:
-            logger.error(f"MongoDB connection check failed: {e}")
-            return False
+            logger.warning(f"MongoDB secure connection check failed: {e}. Trying fallback with tlsAllowInvalidCertificates=True...")
+            try:
+                # Re-initialize client with disabled TLS certificate validation
+                self.client = AsyncIOMotorClient(config.MONGO_URI, tlsAllowInvalidCertificates=True)
+                db_name = "PostRejalovchiDB"
+                self.db = self.client[db_name]
+                await self.db.command("ping")
+                logger.info("Connected to MongoDB using fallback (tlsAllowInvalidCertificates=True).")
+                return True
+            except Exception as fallback_err:
+                logger.error(f"MongoDB connection check failed on both standard and fallback attempts: {fallback_err}")
+                return False
 
     def get_db(self):
         if self.db is None:
