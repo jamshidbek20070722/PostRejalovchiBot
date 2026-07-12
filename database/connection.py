@@ -2,6 +2,8 @@ import logging
 from motor.motor_asyncio import AsyncIOMotorClient
 import config
 
+import certifi
+
 logger = logging.getLogger(__name__)
 
 class DatabaseConnection:
@@ -12,7 +14,7 @@ class DatabaseConnection:
     def connect(self):
         if self.client is None:
             logger.info("Connecting to MongoDB...")
-            self.client = AsyncIOMotorClient(config.MONGO_URI)
+            self.client = AsyncIOMotorClient(config.MONGO_URI, tlsCAFile=certifi.where())
             # Enforce the standard database name identifier
             db_name = "PostRejalovchiDB"
             self.db = self.client[db_name]
