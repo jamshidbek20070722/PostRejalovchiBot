@@ -18,11 +18,10 @@ logger = logging.getLogger(__name__)
 router = Router()
 
 # Helper to verify user is admin/owner
-class IsAdminFilter:
-    async def __call__(self, message: Message, db_user: dict) -> bool:
-        return db_user.get("role") in ["admin", "owner"]
+async def is_admin_filter(message: Message, db_user: dict) -> bool:
+    return db_user.get("role") in ["admin", "owner"]
 
-router.message.filter(IsAdminFilter())
+router.message.filter(is_admin_filter)
 
 
 # --- QUEUE PREVIEW ---

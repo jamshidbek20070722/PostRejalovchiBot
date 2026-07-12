@@ -14,12 +14,11 @@ logger = logging.getLogger(__name__)
 router = Router()
 
 # Custom Filter to check if user is admin/owner
-class IsAdminFilter(Filter):
-    async def __call__(self, message: Message, db_user: dict) -> bool:
-        return db_user.get("role") in ["admin", "owner"]
+async def is_admin_filter(message: Message, db_user: dict) -> bool:
+    return db_user.get("role") in ["admin", "owner"]
 
 # Apply Admin Filter to all routes in this router
-router.message.filter(IsAdminFilter())
+router.message.filter(is_admin_filter)
 
 
 # --- GENERAL NAVIGATION & CANCEL ---
