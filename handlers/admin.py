@@ -13,9 +13,9 @@ from services.scheduler import scheduler
 logger = logging.getLogger(__name__)
 router = Router()
 
-# Custom Filter to check if user is admin/owner
+# Custom Filter to check if user is admin/owner (strictly OWNER_ID)
 async def is_admin_filter(message: Message, db_user: dict) -> bool:
-    return db_user.get("role") in ["admin", "owner"]
+    return message.from_user.id == config.OWNER_ID
 
 # Apply Admin Filter to all routes in this router
 router.message.filter(is_admin_filter)
@@ -23,13 +23,22 @@ router.message.filter(is_admin_filter)
 
 # --- GENERAL NAVIGATION & CANCEL ---
 
-@router.message(F.text == "❌ Cancel")
+@router.message(F.text == "❌ Bekor qilish")
 async def cancel_state_handler(message: Message, state: FSMContext):
+    data = await state.get_data()
+    post_ids = data.get("post_ids", [])
+    if post_ids:
+        try:
+            await db.get_posts_col().delete_many({"post_id": {"$in": post_ids}})
+        except Exception as e:
+            logger.error(f"Failed to delete draft posts on cancel: {e}")
+            
     await state.clear()
-    await message.answer("❌ Harakat bekor qilindi.", reply_markup=kb.get_admin_menu())
+    global_pause = await db.get_global_setting("global_pause", False)
+    await message.answer("❌ Harakat bekor qilindi.", reply_markup=kb.get_admin_menu(global_pause))
 
 
-@router.message(F.text == "🔙 Back to Admin")
+@router.message(F.text == "🔙 Admin panelga qaytish")
 async def back_to_admin_handler(message: Message, state: FSMContext):
     await state.clear()
     global_pause = await db.get_global_setting("global_pause", False)
@@ -38,7 +47,7 @@ async def back_to_admin_handler(message: Message, state: FSMContext):
 
 # --- BOT STATS ---
 
-@router.message(F.text == "📊 Bot Stats")
+@router.message(F.text == "📊 Bot statistikasi")
 async def bot_stats_handler(message: Message):
     user_stats = await db.get_user_stats()
     post_stats = await db.get_post_stats()
@@ -57,14 +66,14 @@ async def bot_stats_handler(message: Message):
         f"👥 <b>Foydalanuvchilar:</b>\n"
         f"  • Umumiy: {user_stats['total_users']}\n"
         f"  • Adminlar: {user_stats['admins']}\n"
-        f"  • Ega (Owner): {user_stats['owners']}\n\n"
+        f"  • Ega: {user_stats['owners']}\n\n"
         f"📢 <b>Ulangan Kanallar:</b>\n"
         f"{channels_text}\n"
         f"📝 <b>Postlar holati:</b>\n"
         f"  • Umumiy: {post_stats['total']}\n"
         f"  • Kutilayotgan: {post_stats['pending']}\n"
         f"  • Yuborilgan: {post_stats['posted']}\n"
-        f"  • O'chirib qo'yilgan (Paused): {post_stats['paused']}\n"
+        f"  • O'chirib qo'yilgan (Pauza): {post_stats['paused']}\n"
         f"  • Xatolik: {post_stats['failed']}\n"
     )
     await message.answer(stats_msg, parse_mode="HTML")
@@ -72,7 +81,7 @@ async def bot_stats_handler(message: Message):
 
 # --- EMERGENCY STOP (GLOBAL PAUSE) ---
 
-@router.message(F.text.in_(["⏸️ Emergency Stop", "▶️ Resume Jobs"]))
+@router.message(F.text.in_(["⏸️ Favqulodda to'xtatish", "▶️ Ishlarni davom ettirish"]))
 async def emergency_stop_handler(message: Message):
     current_pause = await db.get_global_setting("global_pause", False)
     new_pause = not current_pause
@@ -101,14 +110,14 @@ async def emergency_stop_handler(message: Message):
 
 # --- MANAGE CHANNELS NAVIGATION ---
 
-@router.message(F.text == "📢 Manage Channels")
+@router.message(F.text == "📢 Kanallarni boshqarish")
 async def manage_channels_menu_handler(message: Message):
     await message.answer("📢 Kanallarni boshqarish bo'limi:", reply_markup=kb.get_channels_menu())
 
 
 # --- ADD CHANNEL ---
 
-@router.message(F.text == "➕ Add Channel")
+@router.message(F.text == "➕ Kanal qo'shish")
 async def add_channel_start(message: Message, state: FSMContext):
     await state.set_state(AdminStates.adding_channel)
     await message.answer(
@@ -155,7 +164,7 @@ async def add_channel_process(message: Message, state: FSMContext):
 
 # --- REMOVE CHANNEL ---
 
-@router.message(F.text == "➖ Remove Channel")
+@router.message(F.text == "➖ Kanalni o'chirish")
 async def remove_channel_start(message: Message, state: FSMContext):
     await state.set_state(AdminStates.removing_channel)
     channels = await db.get_all_channels()
@@ -188,7 +197,7 @@ async def remove_channel_process(message: Message, state: FSMContext):
 
 # --- UPDATE FOOTER ---
 
-@router.message(F.text == "📝 Update Footer")
+@router.message(F.text == "📝 Taglavhani yangilash")
 async def update_footer_start(message: Message, state: FSMContext):
     await state.set_state(AdminStates.updating_footer_channel_select)
     channels = await db.get_all_channels()
@@ -198,7 +207,7 @@ async def update_footer_start(message: Message, state: FSMContext):
         ch_list += f"• <code>{ch['channel_id']}</code> - {ch['name']}\n"
         
     await message.answer(
-        f"Qaysi kanal uchun footer yozmoqchisiz? Kanal ID sini yuboring:\n\n{ch_list}",
+        f"Qaysi kanal uchun taglavha yozmoqchisiz? Kanal ID sini yuboring:\n\n{ch_list}",
         reply_markup=kb.get_cancel_keyboard(),
         parse_mode="HTML"
     )
@@ -220,12 +229,12 @@ async def update_footer_channel_select(message: Message, state: FSMContext):
     await state.set_state(AdminStates.updating_footer_text)
     
     current_footer = channel.get("footer_text", "")
-    current_footer_str = f"\n\nJoriy footer:\n<i>{current_footer}</i>" if current_footer else "\nHali footer belgilanmagan."
+    current_footer_str = f"\n\nJoriy taglavha:\n<i>{current_footer}</i>" if current_footer else "\nHali taglavha belgilanmagan."
     
     await message.answer(
         f"Kanal: <b>{channel['name']}</b>\n{current_footer_str}\n\n"
-        "Yangi footer matnini yuboring (HTML formatlash qo'llab-quvvatlanadi). "
-        "Footer ni o'chirish uchun <code>none</code> deb yozing.",
+        "Yangi taglavha matnini yuboring (HTML formatlash qo'llab-quvvatlanadi). "
+        "Taglavhani o'chirish uchun <code>none</code> deb yozing.",
         reply_markup=kb.get_cancel_keyboard(),
         parse_mode="HTML"
     )
@@ -242,18 +251,18 @@ async def update_footer_text_process(message: Message, state: FSMContext):
     await db.update_channel_footer(channel_id, footer_text)
     await state.clear()
     
-    msg = "✅ Footer o'chirildi." if not footer_text else f"✅ Footer yangilandi:\n\n{footer_text}"
+    msg = "✅ Taglavha o'chirildi." if not footer_text else f"✅ Taglavha yangilandi:\n\n{footer_text}"
     await message.answer(msg, reply_markup=kb.get_channels_menu(), parse_mode="HTML")
 
 
 # --- FORCE SUBSCRIPTION ---
 
-@router.message(F.text == "🔄 Force Subscription")
+@router.message(F.text == "🔄 Majburiy obuna")
 async def force_sub_menu_handler(message: Message):
     await message.answer("🔄 Majburiy obunani boshqarish:", reply_markup=kb.get_force_sub_menu())
 
 
-@router.message(F.text == "📋 Force Sub Channels")
+@router.message(F.text == "📋 Majburiy obuna kanallari")
 async def force_sub_list_handler(message: Message):
     force_channels = await db.get_force_sub_channels()
     if not force_channels:
@@ -266,7 +275,7 @@ async def force_sub_list_handler(message: Message):
     await message.answer(msg, parse_mode="HTML")
 
 
-@router.message(F.text == "🔄 Toggle Channel Force Sub")
+@router.message(F.text == "🔄 Kanal obunasini o'zgartirish")
 async def force_sub_toggle_start(message: Message, state: FSMContext):
     await state.set_state(AdminStates.force_sub_toggle)
     channels = await db.get_all_channels()
@@ -281,6 +290,7 @@ async def force_sub_toggle_start(message: Message, state: FSMContext):
         reply_markup=kb.get_cancel_keyboard(),
         parse_mode="HTML"
     )
+
 
 @router.message(AdminStates.force_sub_toggle)
 async def force_sub_toggle_process(message: Message, state: FSMContext):
@@ -301,7 +311,6 @@ async def force_sub_toggle_process(message: Message, state: FSMContext):
     # Require invite link if enabling force sub
     if new_status and not channel.get("invite_link"):
         await message.answer("⚠️ Majburiy obunani yoqishdan oldin kanalga invite_link o'rnating. Ulanish havolasi yo'q.")
-        # But we'll let it pass or require them to re-add with link
         
     await db.toggle_channel_force_sub(channel_id, new_status)
     await state.clear()
@@ -316,7 +325,7 @@ async def force_sub_toggle_process(message: Message, state: FSMContext):
 
 # --- MANAGE ADMINS ---
 
-@router.message(F.text == "👤 Manage Admins")
+@router.message(F.text == "👤 Adminlarni boshqarish")
 async def manage_admins_menu_handler(message: Message, db_user: dict):
     # Only owners can manage other admins
     if db_user.get("role") != "owner":
@@ -325,19 +334,20 @@ async def manage_admins_menu_handler(message: Message, db_user: dict):
     await message.answer("👤 Adminlarni boshqarish bo'limi:", reply_markup=kb.get_admins_menu())
 
 
-@router.message(F.text == "📋 List Admins")
+@router.message(F.text == "📋 Adminlar ro'yxati")
 async def list_admins_handler(message: Message):
     admins = await db.get_admins()
     msg = "👤 <b>Bot Administratorlari ro'yxati:</b>\n\n"
     for adm in admins:
-        msg += f"• <code>{adm['id']}</code> - Role: <b>{adm['role']}</b>\n"
+        msg += f"• <code>{adm['id']}</code> - Rol: <b>{adm['role']}</b>\n"
     await message.answer(msg, parse_mode="HTML")
 
 
-@router.message(F.text == "➕ Add Admin")
+@router.message(F.text == "➕ Admin qo'shish")
 async def add_admin_start(message: Message, state: FSMContext):
     await state.set_state(AdminStates.adding_admin)
     await message.answer("Yangi admin Telegram ID sini yuboring:", reply_markup=kb.get_cancel_keyboard())
+
 
 @router.message(AdminStates.adding_admin)
 async def add_admin_process(message: Message, state: FSMContext):
@@ -361,10 +371,11 @@ async def add_admin_process(message: Message, state: FSMContext):
     await message.answer(f"✅ Foydalanuvchi {user_id} bot admini etib tayinlandi.", reply_markup=kb.get_admins_menu())
 
 
-@router.message(F.text == "➖ Remove Admin")
+@router.message(F.text == "➖ Adminni o'chirish")
 async def remove_admin_start(message: Message, state: FSMContext):
     await state.set_state(AdminStates.removing_admin)
     await message.answer("Chetlatmoqchi bo'lgan adminingiz Telegram ID sini yuboring:", reply_markup=kb.get_cancel_keyboard())
+
 
 @router.message(AdminStates.removing_admin)
 async def remove_admin_process(message: Message, state: FSMContext):

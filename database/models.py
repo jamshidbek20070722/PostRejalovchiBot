@@ -115,20 +115,31 @@ async def create_post(
     text: str,
     post_type: str,
     target_channel: int,
-    schedule_config: Dict[str, Any],
-    scheduled_time: datetime.datetime
+    schedule_config: Optional[Dict[str, Any]] = None,
+    scheduled_time: Optional[datetime.datetime] = None,
+    status: str = "pending",
+    caption: Optional[str] = None,
+    media_type: Optional[str] = None,
+    batch_id: Optional[str] = None
 ) -> bool:
     post_doc = {
         "post_id": post_id,
         "file_id": file_id,
         "text": text,
+        "caption": caption if caption is not None else text,
         "type": post_type,
+        "media_type": media_type if media_type is not None else post_type,
         "target_channel": target_channel,
-        "schedule_config": schedule_config,
-        "scheduled_time": scheduled_time,
-        "status": "pending",
+        "status": status,
         "created_at": datetime.datetime.now(datetime.timezone.utc)
     }
+    if schedule_config is not None:
+        post_doc["schedule_config"] = schedule_config
+    if scheduled_time is not None:
+        post_doc["scheduled_time"] = scheduled_time
+    if batch_id is not None:
+        post_doc["batch_id"] = batch_id
+        
     await get_posts_col().insert_one(post_doc)
     return True
 

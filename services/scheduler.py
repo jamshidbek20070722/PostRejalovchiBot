@@ -46,10 +46,10 @@ async def send_reminder_job(post_id: str, minutes_left: int):
     # Notify owner
     text_preview = post["text"][:100] + "..." if len(post["text"]) > 100 else post["text"]
     message = (
-        f"🔔 <b>Pre-event Reminder</b>\n\n"
-        f"Post <code>{post_id}</code> is scheduled to be published in <b>{minutes_left} minutes</b>!\n"
-        f"Target Channel: <b>{channel_name}</b>\n"
-        f"Preview:\n<i>{text_preview}</i>"
+        f"🔔 <b>Yaqinlashayotgan post haqida ogohlantirish</b>\n\n"
+        f"<code>{post_id}</code> ID ga ega post <b>{minutes_left} daqiqa</b> ichida kanalga yuboriladi!\n"
+        f"Maqsadli kanal: <b>{channel_name}</b>\n"
+        f"Ko'rinishi:\n<i>{text_preview}</i>"
     )
     
     try:
@@ -316,3 +316,65 @@ def calculate_next_delivery_time(schedule_config: Dict[str, Any], last_time: Opt
     else:
         # Fallback to 5 minutes in future if type unknown
         return now + datetime.timedelta(minutes=5)
+
+
+def calculate_post_scheduled_time(schedule_config: Dict[str, Any], index: int, now_time: Optional[datetime.datetime] = None) -> datetime.datetime:
+    """
+    Calculates the target delivery datetime for a post at the given index in a batch.
+    Increments the base scheduled time sequentially using a timedelta factor.
+    """
+    if now_time is None:
+        now_time = datetime.datetime.now(timezone)
+    mode = schedule_config.get("mode")
+    
+    if mode == "fixed":
+        time_str = schedule_config.get("time", "12:00")
+        hh, mm = map(int, time_str.split(":"))
+        target = now_time.replace(hour=hh, minute=mm, second=0, microsecond=0)
+        if target <= now_time:
+            target += datetime.timedelta(days=1)
+        # Stagger sequentially by adding 'index' days
+        target += datetime.timedelta(days=index)
+        return target
+        
+    elif mode == "interval":
+        interval_days = schedule_config.get("interval_days", 1)
+        time_str = schedule_config.get("time", "12:00")
+        hh, mm = map(int, time_str.split(":"))
+        target = now_time.replace(hour=hh, minute=mm, second=0, microsecond=0)
+        if target <= now_time:
+            target += datetime.timedelta(days=interval_days)
+        # Stagger sequentially by adding (index * interval_days) days
+        target += datetime.timedelta(days=index * interval_days)
+        return target
+        
+    elif mode == "random":
+        window = schedule_config.get("random_window", {"start": "12:00", "end": "14:00"})
+        start_hh, start_mm = map(int, window["start"].split(":"))
+        end_hh, end_mm = map(int, window["end"].split(":"))
+        
+        start_minutes = start_hh * 60 + start_mm
+        end_minutes = end_hh * 60 + end_mm
+        
+        if end_minutes <= start_minutes:
+            end_minutes += 24 * 60  # Handle overnight window
+            
+        rand_minutes = random.randint(start_minutes, end_minutes)
+        rand_hh = (rand_minutes // 60) % 24
+        rand_mm = rand_minutes % 60
+        
+        # Base day for stagger is now_time + index days
+        base_day = now_time + datetime.timedelta(days=index)
+        target = base_day.replace(hour=rand_hh, minute=rand_mm, second=0, microsecond=0)
+        
+        # Adjust for rolling over
+        if index == 0 and (target <= now_time or rand_minutes >= 24 * 60):
+            target = (now_time + datetime.timedelta(days=1)).replace(hour=rand_hh, minute=rand_mm, second=0, microsecond=0)
+        elif index > 0 and rand_minutes >= 24 * 60:
+            target += datetime.timedelta(days=1)
+            
+        return target
+        
+    else:
+        # Fallback stagger
+        return now_time + datetime.timedelta(minutes=5 + index * 5)

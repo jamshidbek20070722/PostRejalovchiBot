@@ -9,24 +9,25 @@ from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton
 from aiogram.fsm.context import FSMContext
 from aiogram.utils.keyboard import ReplyKeyboardBuilder
 
+import config
 import database.models as db
 import keyboards.reply as kb
 from states.states import PostCreationStates
-from services.scheduler import scheduler, calculate_next_delivery_time, schedule_post_jobs, timezone
+from services.scheduler import scheduler, calculate_post_scheduled_time, schedule_post_jobs, timezone
 
 logger = logging.getLogger(__name__)
 router = Router()
 
 # Helper to verify user is admin/owner
 async def is_admin_filter(message: Message, db_user: dict) -> bool:
-    return db_user.get("role") in ["admin", "owner"]
+    return message.from_user.id == config.OWNER_ID
 
 router.message.filter(is_admin_filter)
 
 
 # --- QUEUE PREVIEW ---
 
-@router.message(F.text == "👀 Preview Queue")
+@router.message(F.text == "👀 Navbatni ko'rish")
 async def preview_queue_start(message: Message):
     channels = await db.get_all_channels()
     if not channels:
@@ -34,6 +35,13 @@ async def preview_queue_start(message: Message):
         return
         
     preview_msg = "👀 <b>Navbatdagi Rejalashtirilgan Postlar (Kanal kesimida):</b>\n\n"
+    post_types_uz = {
+        "photo": "Rasm",
+        "video": "Video",
+        "document": "Hujjat",
+        "audio": "Audio",
+        "text": "Matn"
+    }
     
     for ch in channels:
         ch_id = ch["channel_id"]
@@ -54,11 +62,15 @@ async def preview_queue_start(message: Message):
             
             text_snippet = post["text"][:60] + "..." if len(post["text"]) > 60 else post["text"]
             if not text_snippet.strip():
-                text_snippet = f"[Fayl: {post['type'].capitalize()}]"
+                p_type = post["type"]
+                type_uz = post_types_uz.get(p_type, p_type.upper())
+                text_snippet = f"[Fayl: {type_uz}]"
                 
+            p_type = post["type"]
+            type_uz = post_types_uz.get(p_type, p_type.upper())
             preview_msg += (
                 f"  {i}. ID: <code>{post['post_id']}</code>\n"
-                f"     Turi: <b>{post['type'].upper()}</b>\n"
+                f"     Turi: <b>{type_uz}</b>\n"
                 f"     Vaqt: <code>{time_str}</code>\n"
                 f"     Matn: <i>{text_snippet}</i>\n"
             )
@@ -69,7 +81,7 @@ async def preview_queue_start(message: Message):
 
 # --- POST CREATION FLOW ---
 
-@router.message(F.text == "➕ Schedule Post")
+@router.message(F.text == "➕ Post rejalashtirish")
 async def schedule_post_start(message: Message, state: FSMContext):
     channels = await db.get_all_channels()
     if not channels:
@@ -80,7 +92,7 @@ async def schedule_post_start(message: Message, state: FSMContext):
     builder = ReplyKeyboardBuilder()
     for ch in channels:
         builder.row(KeyboardButton(text=f"{ch['name']} ({ch['channel_id']})"))
-    builder.row(KeyboardButton(text="❌ Cancel"))
+    builder.row(KeyboardButton(text="❌ Bekor qilish"))
     
     await state.set_state(PostCreationStates.waiting_for_channel)
     await message.answer(
@@ -103,76 +115,103 @@ async def channel_selected_process(message: Message, state: FSMContext):
         await message.answer("❌ Kanal ma'lumotlar bazasida topilmadi. Qayta urinib ko'ring.")
         return
         
-    await state.update_data(target_channel=channel_id, posts=[])
-    await state.set_state(PostCreationStates.waiting_for_forwarded_posts)
+    # Initialize the temp batch cache list inside state
+    await state.update_data(target_channel=channel_id, temp_batch=[])
+    await state.set_state(PostCreationStates.waiting_for_media_batch)
     await message.answer(
         f"📢 Tanlangan kanal: <b>{channel['name']}</b>\n\n"
         "Endi ushbu botga bir yoki bir nechta postlarni yuboring (matn, rasm, video, audio yoki fayllar) yoki ularni kanaldan forward qiling.\n\n"
-        "Barcha postlarni yuborib bo'lgach, <b>📥 Done Ingesting</b> tugmasini bosing.",
+        "Barcha postlarni yuborib bo'lgach, <b>✅ Yuklashni yakunlash</b> tugmasini bosing.",
         reply_markup=kb.get_ingestion_keyboard(),
         parse_mode="HTML"
     )
 
 
 # Handle incoming ingestion messages
-@router.message(PostCreationStates.waiting_for_forwarded_posts, F.text != "📥 Done Ingesting")
+@router.message(PostCreationStates.waiting_for_media_batch, ~F.text.in_(["✅ Yuklashni yakunlash", "❌ Bekor qilish"]))
 async def process_forwarded_posts(message: Message, state: FSMContext):
-    # Retrieve existing posts batch list
+    # Retrieve existing temp batch list
     data = await state.get_data()
-    posts_list = data.get("posts", [])
+    temp_batch = data.get("temp_batch", [])
     
     # Analyze message type and extract file_id
     file_id = None
-    post_type = "text"
-    text = ""
+    media_type = "text"
+    caption = ""
     
-    if message.text:
-        post_type = "text"
-        text = message.html_text
-    elif message.photo:
-        post_type = "photo"
+    if message.photo:
+        media_type = "photo"
         file_id = message.photo[-1].file_id
-        text = message.html_text or ""
+        caption = message.html_text or ""
     elif message.video:
-        post_type = "video"
+        media_type = "video"
         file_id = message.video.file_id
-        text = message.html_text or ""
+        caption = message.html_text or ""
     elif message.document:
-        post_type = "document"
+        media_type = "document"
         file_id = message.document.file_id
-        text = message.html_text or ""
+        caption = message.html_text or ""
     elif message.audio:
-        post_type = "audio"
+        media_type = "audio"
         file_id = message.audio.file_id
-        text = message.html_text or ""
+        caption = message.html_text or ""
+    elif message.text:
+        media_type = "text"
+        caption = message.html_text or ""
     else:
-        # Unsupported format, skip it
-        await message.answer("⚠️ Ushbu post turi qo'llab-quvvatlanmaydi! Faqat matn, rasm, video, audio va fayllarni yuboring.")
+        # Unsupported format, skip it silently as per requirements (no status spam)
         return
         
-    # Append post
-    posts_list.append({
+    # Append post metadata
+    temp_batch.append({
+        "message_id": message.message_id,
         "file_id": file_id,
-        "text": text,
-        "type": post_type
+        "media_type": media_type,
+        "caption": caption
     })
     
-    await state.update_data(posts=posts_list)
-    await message.answer(f"📥 Post qabul qilindi! (Jami navbatda: <b>{len(posts_list)}</b> ta).", parse_mode="HTML")
+    await state.update_data(temp_batch=temp_batch)
 
 
-@router.message(PostCreationStates.waiting_for_forwarded_posts, F.text == "📥 Done Ingesting")
+@router.message(PostCreationStates.waiting_for_media_batch, F.text == "✅ Yuklashni yakunlash")
 async def ingestion_done_process(message: Message, state: FSMContext):
     data = await state.get_data()
-    posts_list = data.get("posts", [])
+    temp_batch = data.get("temp_batch", [])
+    target_channel = data.get("target_channel")
     
-    if not posts_list:
+    if not temp_batch:
         await message.answer("❌ Hech qanday post yuborilmadi! Kamida bitta post yuborishingiz kerak.")
         return
         
+    # Sort the cached temp_batch explicitly by Telegram's native message.message_id
+    temp_batch.sort(key=lambda x: x["message_id"])
+    
+    # Generate unique batch ID
+    batch_id = str(uuid.uuid4())
+    post_ids = []
+    
+    # Perform the batch insert operations into MongoDB (with status "draft")
+    for item in temp_batch:
+        post_id = str(uuid.uuid4())
+        await db.create_post(
+            post_id=post_id,
+            file_id=item["file_id"],
+            text=item["caption"],
+            post_type=item["media_type"],
+            target_channel=target_channel,
+            status="draft",
+            caption=item["caption"],
+            media_type=item["media_type"],
+            batch_id=batch_id
+        )
+        post_ids.append(post_id)
+        
+    # Clear the cache in FSM context data
+    await state.update_data(temp_batch=[], batch_id=batch_id, post_ids=post_ids)
+    
     await state.set_state(PostCreationStates.waiting_for_schedule_mode)
     await message.answer(
-        f"✅ Jami <b>{len(posts_list)}</b> ta post muvaffaqiyatli yuklandi.\n\n"
+        f"✅ Jami <b>{len(post_ids)}</b> ta post muvaffaqiyatli yuklandi.\n\n"
         "Endi rejalashtirish rejimini tanlang:",
         reply_markup=kb.get_schedule_mode_keyboard(),
         parse_mode="HTML"
@@ -185,9 +224,9 @@ async def ingestion_done_process(message: Message, state: FSMContext):
 async def schedule_mode_selected(message: Message, state: FSMContext):
     mode_text = message.text
     mode_map = {
-        "⏰ Every Day (Fixed)": "fixed",
-        "⏳ Every N Days": "interval",
-        "🎲 Random Window": "random"
+        "⏰ Har kuni (Belgilangan vaqtda)": "fixed",
+        "⏳ Har N kunda": "interval",
+        "🎲 Tasodifiy vaqt oralig'ida": "random"
     }
     
     if mode_text not in mode_map:
@@ -328,8 +367,7 @@ async def reactions_process(message: Message, state: FSMContext):
             
     # Retrieve all inputs
     data = await state.get_data()
-    posts_list = data.get("posts", [])
-    target_channel = data.get("target_channel")
+    post_ids = data.get("post_ids", [])
     schedule_config = data.get("schedule_config")
     reminders = data.get("reminders", [])
     
@@ -337,40 +375,25 @@ async def reactions_process(message: Message, state: FSMContext):
     schedule_config["reactions"] = reactions
     schedule_config["reminders"] = reminders
     
-    # Create jobs and store in database
-    # Staggering logic:
-    # If multiple posts are uploaded, we schedule them sequentially.
-    # For example, if mode is fixed "15:00", we calculate the next delivery time.
-    # Post 1 will be scheduled for date D1 at 15:00.
-    # Post 2 will be scheduled for date D2 (D1 + 1 day or N days) at 15:00.
-    # Post 3 for D3, etc. This spaces them out perfectly.
-    
     now = datetime.datetime.now(timezone)
-    last_scheduled_time = None
     
     await message.answer("🔄 Postlar rejalashtirilmoqda, iltimos kuting...")
     
-    for i, post_info in enumerate(posts_list):
-        post_id = str(uuid.uuid4())
+    # Iterate through draft posts sequentially updating them in MongoDB and creating APScheduler jobs
+    for i, post_id in enumerate(post_ids):
+        # Calculate sequential time
+        scheduled_time = calculate_post_scheduled_time(schedule_config, i, now_time=now)
         
-        # Stagger delivery times
-        # For post 0, use now as base date.
-        # For subsequent posts, use the previously calculated post's time.
-        base_time = last_scheduled_time or now
-        scheduled_time = calculate_next_delivery_time(schedule_config, last_time=base_time)
-        
-        # Save scheduled time to track staggering
-        last_scheduled_time = scheduled_time
-        
-        # Create Post in MongoDB
-        await db.create_post(
-            post_id=post_id,
-            file_id=post_info["file_id"],
-            text=post_info["text"],
-            post_type=post_info["type"],
-            target_channel=target_channel,
-            schedule_config=schedule_config,
-            scheduled_time=scheduled_time
+        # Update MongoDB doc (status to pending)
+        await db.get_posts_col().update_one(
+            {"post_id": post_id},
+            {
+                "$set": {
+                    "schedule_config": schedule_config,
+                    "scheduled_time": scheduled_time,
+                    "status": "pending"
+                }
+            }
         )
         
         # Register in APScheduler (timezone aware)
@@ -382,7 +405,7 @@ async def reactions_process(message: Message, state: FSMContext):
     global_pause = await db.get_global_setting("global_pause", False)
     await message.answer(
         f"✅ <b>Muvaffaqiyatli rejalashtirildi!</b>\n\n"
-        f"Jami: <b>{len(posts_list)}</b> ta post navbatga qo'shildi.\n"
+        f"Jami: <b>{len(post_ids)}</b> ta post navbatga qo'shildi.\n"
         "Postlar belgilangan vaqt bo'yicha ketma-ket yuboriladi.",
         reply_markup=kb.get_admin_menu(global_pause),
         parse_mode="HTML"

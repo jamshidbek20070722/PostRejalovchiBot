@@ -1,5 +1,8 @@
 from aiogram.fsm.state import State, StatesGroup
 
+class UserStates(StatesGroup):
+    waiting_for_admin_message = State()
+
 class AdminStates(StatesGroup):
     # Admin administration
     adding_admin = State()
@@ -15,7 +18,7 @@ class AdminStates(StatesGroup):
 class PostCreationStates(StatesGroup):
     # Ingestion flow
     waiting_for_channel = State()
-    waiting_for_forwarded_posts = State()
+    waiting_for_media_batch = State()
     
     # Scheduling configuration
     waiting_for_schedule_mode = State()

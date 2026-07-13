@@ -12,6 +12,7 @@ from aiogram.fsm.storage.memory import MemoryStorage
 import config
 from database.connection import db_manager
 from middlewares.register_user import RegisterUserMiddleware
+from middlewares.access_control import AccessControlMiddleware
 from middlewares.force_sub import ForceSubscriptionMiddleware
 from handlers.user import router as user_router
 from handlers.admin import router as admin_router
@@ -67,6 +68,10 @@ async def main():
     # RegisterUserMiddleware executes first to register/inject user profile
     dp.message.outer_middleware(RegisterUserMiddleware())
     dp.callback_query.outer_middleware(RegisterUserMiddleware())
+    
+    # AccessControlMiddleware blocks non-admin access
+    dp.message.outer_middleware(AccessControlMiddleware())
+    dp.callback_query.outer_middleware(AccessControlMiddleware())
     
     # ForceSubscriptionMiddleware executes second, checking channel join state
     dp.message.outer_middleware(ForceSubscriptionMiddleware())

@@ -1,68 +1,76 @@
+import logging
 from aiogram import Router, F
-from aiogram.types import Message
+from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.filters import CommandStart
+from aiogram.fsm.context import FSMContext
 
+import config
 import keyboards.reply as kb
 import database.models as db
+from states.states import UserStates
 
+logger = logging.getLogger(__name__)
 router = Router()
 
 @router.message(CommandStart())
-async def start_handler(message: Message, db_user: dict):
-    role = db_user.get("role", "user")
+async def start_handler(message: Message, state: FSMContext):
+    # Clear state first
+    await state.clear()
     
+    if message.from_user.id != int(config.OWNER_ID):
+        await message.answer(
+            "👋 Xush kelibsiz!\n\nBu bot faqatgina kanal administratorlari uchun "
+            "postlarni rejalashtirish maqsadida yaratilgan maxsus tizimdir.\n"
+            "Agar savollaringiz yoki takliflaringiz bo'lsa, quyidagi tugma orqali adminga murojaat qilishingiz mumkin.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="✍️ Adminga xabar yo'llash", callback_data="contact_admin")]
+            ])
+        )
+        return
+        
+    global_pause = await db.get_global_setting("global_pause", False)
     welcome_text = (
         f"👋 <b>Assalomu alaykum, {message.from_user.full_name}!</b>\n\n"
-        "Post Rejalovchi Botiga xush kelibsiz! Ushbu bot yordamida kanallaringizga "
-        "postlarni rejalashtirishingiz va avtomatlashtirishingiz mumkin."
+        "⚙️ Siz adminsiz, quyidagi panel orqali botni boshqarishingiz mumkin:"
     )
+    await message.answer(welcome_text, reply_markup=kb.get_admin_menu(global_pause), parse_mode="HTML")
+
+
+@router.callback_query(F.data == "contact_admin")
+async def contact_admin_callback(callback: CallbackQuery, state: FSMContext):
+    await state.set_state(UserStates.waiting_for_admin_message)
+    await callback.message.answer(
+        "✍️ Adminga yubormoqchi bo'lgan xabaringizni yozing:",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="❌ Bekor qilish", callback_data="cancel_contact")]
+        ])
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data == "cancel_contact")
+async def cancel_contact_callback(callback: CallbackQuery, state: FSMContext):
+    await state.clear()
+    await callback.message.edit_text("❌ Xabar yuborish bekor qilindi.")
+    await callback.answer()
+
+
+@router.message(UserStates.waiting_for_admin_message)
+async def forward_to_admin_process(message: Message, state: FSMContext):
+    # Forward the message to the OWNER_ID
+    try:
+        await message.bot.send_message(
+            chat_id=config.OWNER_ID,
+            text=f"✉️ <b>Adminga yangi xabar!</b>\n\n"
+                 f"👤 Foydalanuvchi: {message.from_user.full_name}\n"
+                 f"🆔 ID: <code>{message.from_user.id}</code>\n"
+                 f"🔗 Username: @{message.from_user.username or 'yo\'q'}\n\n"
+                 f"💬 Xabar:\n{message.html_text or message.text}",
+            parse_mode="HTML"
+        )
+        await message.answer("✅ Xabaringiz adminga muvaffaqiyatli yuborildi!")
+    except Exception as e:
+        await message.answer(f"❌ Xabar yuborishda xatolik yuz berdi: {e}")
+        logger.error(f"Failed to forward message to admin: {e}")
     
-    if role in ["owner", "admin"]:
-        welcome_text += "\n\n⚙️ Siz adminsiz, quyidagi panel orqali botni boshqarishingiz mumkin:"
-        await message.answer(welcome_text, reply_markup=kb.get_admin_menu(), parse_mode="HTML")
-    else:
-        welcome_text += "\n\nBot faqat adminlar uchun rejalashtirish imkonini beradi. Kanallarga obuna bo'lishni unutmang."
-        await message.answer(welcome_text, reply_markup=kb.get_user_menu(), parse_mode="HTML")
-
-
-@router.message(F.text == "📊 Status")
-async def status_handler(message: Message):
-    # Simple bot system status
-    await message.answer(
-        "🟢 <b>Bot tizimi faol!</b>\n\n"
-        "Barcha xizmatlar muvaffaqiyatli ishlamoqda.\n"
-        "Ma'lumotlar bazasi: MongoDB (Ulanish muvaffaqiyatli)\n"
-        "Vaqt zonasi: Asia/Tashkent (GMT+5)",
-        parse_mode="HTML"
-    )
-
-
-@router.message(F.text == "ℹ️ About")
-async def about_handler(message: Message):
-    await message.answer(
-        "🤖 <b>Bot haqida:</b>\n\n"
-        "Ushbu bot kanallarga rejalashtirilgan postlarni joylash, footers (taglavhalar) qo'shish "
-        "va postlarga faol inline reaksiya tugmalari biriktirish uchun yaratilgan.\n\n"
-        "Dasturchi: @Jamshid\n"
-        "Texnologiyalar: Python, Aiogram 3.x, MongoDB, APScheduler.",
-        parse_mode="HTML"
-    )
-
-
-@router.message(F.text == "👥 Support")
-async def support_handler(message: Message):
-    await message.answer(
-        "📞 <b>Qo'llab-quvvatlash xizmati:</b>\n\n"
-        "Savollar yoki takliflar yuzasidan bot egasiga murojaat qiling:\n"
-        "Telegram: @Jamshid\n\n"
-        "Muammolar haqida yozishdan oldin bot xatolarini tekshiring.",
-        parse_mode="HTML"
-    )
-
-
-@router.message(F.text == "⬅️ User Menu")
-async def user_menu_redirect(message: Message):
-    await message.answer(
-        "🔄 Foydalanuvchi menyusiga o'tildi.",
-        reply_markup=kb.get_user_menu()
-    )
+    await state.clear()
