@@ -59,13 +59,15 @@ async def cancel_contact_callback(callback: CallbackQuery, state: FSMContext):
 async def forward_to_admin_process(message: Message, state: FSMContext):
     # Forward the message to the OWNER_ID
     try:
+        username_val = message.from_user.username or "yo'q"
+        text_content = message.html_text or message.text
         await message.bot.send_message(
             chat_id=config.OWNER_ID,
             text=f"✉️ <b>Adminga yangi xabar!</b>\n\n"
                  f"👤 Foydalanuvchi: {message.from_user.full_name}\n"
                  f"🆔 ID: <code>{message.from_user.id}</code>\n"
-                 f"🔗 Username: @{message.from_user.username or 'yo\'q'}\n\n"
-                 f"💬 Xabar:\n{message.html_text or message.text}",
+                 f"🔗 Username: @{username_val}\n\n"
+                 f"💬 Xabar:\n{text_content}",
             parse_mode="HTML"
         )
         await message.answer("✅ Xabaringiz adminga muvaffaqiyatli yuborildi!")
