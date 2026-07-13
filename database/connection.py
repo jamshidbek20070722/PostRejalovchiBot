@@ -14,7 +14,7 @@ class DatabaseConnection:
     def connect(self):
         if self.client is None:
             logger.info("Connecting to MongoDB...")
-            self.client = AsyncIOMotorClient(config.MONGO_URI, tlsCAFile=certifi.where())
+            self.client = AsyncIOMotorClient(config.MONGO_URI, tlsCAFile=certifi.where(), serverSelectionTimeoutMS=5000)
             # Enforce the standard database name identifier
             db_name = "PostRejalovchiDB"
             self.db = self.client[db_name]
@@ -31,7 +31,7 @@ class DatabaseConnection:
             logger.warning(f"MongoDB secure connection check failed: {e}. Trying fallback with tlsAllowInvalidCertificates=True...")
             try:
                 # Re-initialize client with disabled TLS certificate validation
-                self.client = AsyncIOMotorClient(config.MONGO_URI, tlsAllowInvalidCertificates=True)
+                self.client = AsyncIOMotorClient(config.MONGO_URI, tlsAllowInvalidCertificates=True, serverSelectionTimeoutMS=5000)
                 db_name = "PostRejalovchiDB"
                 self.db = self.client[db_name]
                 await self.db.command("ping")
