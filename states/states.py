@@ -14,6 +14,9 @@ class AdminStates(StatesGroup):
     updating_footer_channel_select = State()
     updating_footer_text = State()
     force_sub_toggle = State()
+    
+    # Post editing
+    AwaitingNewPostText = State()
 
 class PostCreationStates(StatesGroup):
     # Ingestion flow

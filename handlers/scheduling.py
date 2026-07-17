@@ -84,6 +84,8 @@ async def preview_queue_start(message: Message):
 
 @router.message(F.text == "📅 Post rejalashtirish")
 async def schedule_post_start(message: Message, state: FSMContext):
+    await state.clear()
+    await state.update_data(custom_footer=None)
     channels = await db.get_all_channels()
     if not channels:
         await message.answer("❌ Kanallar mavjud emas! Avval kanallarni boshqarish bo'limidan kanal qo'shing.")
@@ -206,10 +208,10 @@ async def custom_footer_process(message: Message, state: FSMContext):
     input_text = message.text.strip() if message.text else ""
     
     if input_text.lower() in ["/skip", "⏭️ o'tkazib yuborish"]:
-        custom_footer = ""
+        custom_footer = None
     else:
         # Preserve HTML formatting
-        custom_footer = message.html_text or message.text or ""
+        custom_footer = message.html_text or message.text or None
         
     data = await state.get_data()
     temp_batch = data.get("temp_batch", [])

@@ -86,7 +86,7 @@ async def send_scheduled_post_job(post_id: str):
     # 1. Fetch channel and append custom footer if present
     channel = await db.get_channel(channel_id)
     footer = channel.get("footer_text", "") if channel else ""
-    custom_footer = post.get("custom_footer", "")
+    custom_footer = post.get("custom_footer") or ""
     
     final_text = text
     target_footer = custom_footer or footer
@@ -307,6 +307,20 @@ def schedule_post_jobs(post_id: str, scheduled_time: datetime.datetime, reminder
                 args=[post_id, min_before],
                 misfire_grace_time=600
             )
+
+def cancel_post_jobs(post_id: str):
+    """
+    Cancels the scheduled posting job and all pre-post reminder jobs.
+    """
+    job_id = f"post_{post_id}"
+    if scheduler.get_job(job_id):
+        scheduler.remove_job(job_id)
+        
+    for job in scheduler.get_jobs():
+        if job.id.startswith(f"rem_{post_id}_"):
+            scheduler.remove_job(job.id)
+            
+            
 
 
 async def init_scheduler(bot: Bot):
