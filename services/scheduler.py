@@ -21,8 +21,6 @@ scheduler = AsyncIOScheduler(timezone=timezone)
 # We store the bot instance here once initialized to use in jobs
 _bot: Optional[Bot] = None
 
-from keyboards.inline import get_reaction_keyboard
-
 
 
 async def send_reminder_job(post_id: str, minutes_left: int):
@@ -44,7 +42,9 @@ async def send_reminder_job(post_id: str, minutes_left: int):
     channel_name = channel["name"] if channel else f"ID: {channel_id}"
     
     # Notify owner
-    text_preview = post["text"][:100] + "..." if len(post["text"]) > 100 else post["text"]
+    import re
+    clean_text = re.sub(r'<[^>]+>', '', post["text"])
+    text_preview = clean_text[:100] + "..." if len(clean_text) > 100 else clean_text
     message = (
         f"🔔 <b>Yaqinlashayotgan post haqida ogohlantirish</b>\n\n"
         f"<code>{post_id}</code> ID ga ega post <b>{minutes_left} daqiqa</b> ichida kanalga yuboriladi!\n"
@@ -86,19 +86,16 @@ async def send_scheduled_post_job(post_id: str):
     # 1. Fetch channel and append custom footer if present
     channel = await db.get_channel(channel_id)
     footer = channel.get("footer_text", "") if channel else ""
+    custom_footer = post.get("custom_footer", "")
     
     final_text = text
-    if footer:
-        final_text = f"{text}\n\n{footer}"
-        
-    # 2. Build reaction keyboard if configured
-    # In schedule_config, we store the list of reaction emoji or stars
-    reactions = post["schedule_config"].get("reactions", [])
-    
-    # Temporary placeholder keyboard (empty markup if no reactions)
-    # We will build actual keyboard once we get the sent message ID.
-    reply_markup = None
-    
+    target_footer = custom_footer or footer
+    if target_footer:
+        if final_text:
+            final_text = f"{final_text}\n\n{target_footer}"
+        else:
+            final_text = target_footer
+            
     # 3. Publish the post based on media type
     sent_msg = None
     try:
@@ -139,30 +136,140 @@ async def send_scheduled_post_job(post_id: str):
             )
             
         if sent_msg:
-            # 4. Attach reaction keyboard if reactions are set
-            if reactions:
-                # Store message ID in reactions mapping or update post
-                # Initially counts are 0
-                counts = {r: 0 for r in reactions}
-                reply_markup = get_reaction_keyboard(channel_id, sent_msg.message_id, reactions, counts)
-                await _bot.edit_message_reply_markup(
-                    chat_id=channel_id,
-                    message_id=sent_msg.message_id,
-                    reply_markup=reply_markup
+            schedule_config = post.get("schedule_config", {})
+            mode = schedule_config.get("mode")
+            batch_id = post.get("batch_id")
+            
+            if mode == "daily_infinite":
+                current_scheduled_time = post["scheduled_time"]
+                if current_scheduled_time.tzinfo is None:
+                    current_scheduled_time = timezone.localize(current_scheduled_time)
+                new_scheduled_time = current_scheduled_time + datetime.timedelta(hours=24)
+                
+                await db.get_posts_col().update_one(
+                    {"post_id": post_id},
+                    {
+                        "$set": {
+                            "scheduled_time": new_scheduled_time,
+                            "next_execution_time": new_scheduled_time,
+                            "msg_id": sent_msg.message_id
+                        }
+                    }
+                )
+                reminders = schedule_config.get("reminders", [])
+                schedule_post_jobs(post_id, new_scheduled_time, reminders)
+                logger.info(f"Successfully posted daily infinite post {post_id}. Rescheduled for {new_scheduled_time}")
+                
+            elif mode == "rotation" and batch_id:
+                # 1. Find all posts in the batch
+                batch_posts = await db.get_posts_col().find({"batch_id": batch_id}).sort("sequence_index", 1).to_list(length=1000)
+                n_posts = len(batch_posts)
+                
+                # 2. Get current sequence index
+                current_idx = post.get("sequence_index", 0)
+                next_idx = (current_idx + 1) % n_posts
+                
+                # 3. Find the next post document
+                next_post = batch_posts[next_idx]
+                next_post_id = next_post["post_id"]
+                
+                # 4. Calculate next execution time (+24 hours from current post's scheduled_time)
+                current_scheduled_time = post["scheduled_time"]
+                if current_scheduled_time.tzinfo is None:
+                    current_scheduled_time = timezone.localize(current_scheduled_time)
+                new_scheduled_time = current_scheduled_time + datetime.timedelta(hours=24)
+                
+                # 5. Update DB
+                await db.get_posts_col().update_one(
+                    {"post_id": post_id},
+                    {
+                        "$set": {
+                            "status": "rotation_waiting",
+                            "msg_id": sent_msg.message_id
+                        }
+                    }
+                )
+                await db.get_posts_col().update_one(
+                    {"post_id": next_post_id},
+                    {
+                        "$set": {
+                            "status": "pending",
+                            "scheduled_time": new_scheduled_time,
+                            "next_execution_time": new_scheduled_time
+                        }
+                    }
                 )
                 
-            # Update post status in database
-            await db.update_post_status(post_id, "posted")
-            # Update post document with the message ID in channel for reference
-            await db.get_posts_col().update_one(
-                {"post_id": post_id},
-                {"$set": {"msg_id": sent_msg.message_id}}
-            )
-            logger.info(f"Successfully posted scheduled post {post_id} to channel {channel_id}")
+                # 6. Schedule next job in APScheduler
+                reminders = next_post.get("schedule_config", {}).get("reminders", [])
+                schedule_post_jobs(next_post_id, new_scheduled_time, reminders)
+                logger.info(f"Successfully posted rotation post {post_id}. Rotated to next post {next_post_id} at {new_scheduled_time}")
+                
+            else:
+                # Update post status in database
+                await db.update_post_status(post_id, "posted")
+                await db.get_posts_col().update_one(
+                    {"post_id": post_id},
+                    {"$set": {"msg_id": sent_msg.message_id}}
+                )
+                logger.info(f"Successfully posted scheduled post {post_id} to channel {channel_id}")
             
     except Exception as e:
         logger.error(f"Failed to send scheduled post {post_id}: {e}")
-        await db.update_post_status(post_id, "failed")
+        schedule_config = post.get("schedule_config", {})
+        mode = schedule_config.get("mode")
+        batch_id = post.get("batch_id")
+        
+        if mode == "daily_infinite":
+            current_scheduled_time = post["scheduled_time"]
+            if current_scheduled_time.tzinfo is None:
+                current_scheduled_time = timezone.localize(current_scheduled_time)
+            new_scheduled_time = current_scheduled_time + datetime.timedelta(hours=24)
+            await db.get_posts_col().update_one(
+                {"post_id": post_id},
+                {
+                    "$set": {
+                        "scheduled_time": new_scheduled_time,
+                        "next_execution_time": new_scheduled_time
+                    }
+                }
+            )
+            reminders = schedule_config.get("reminders", [])
+            schedule_post_jobs(post_id, new_scheduled_time, reminders)
+            logger.info(f"Failed to send daily infinite post {post_id}. Rescheduled for {new_scheduled_time}")
+            
+        elif mode == "rotation" and batch_id:
+            batch_posts = await db.get_posts_col().find({"batch_id": batch_id}).sort("sequence_index", 1).to_list(length=1000)
+            n_posts = len(batch_posts)
+            current_idx = post.get("sequence_index", 0)
+            next_idx = (current_idx + 1) % n_posts
+            next_post = batch_posts[next_idx]
+            next_post_id = next_post["post_id"]
+            
+            current_scheduled_time = post["scheduled_time"]
+            if current_scheduled_time.tzinfo is None:
+                current_scheduled_time = timezone.localize(current_scheduled_time)
+            new_scheduled_time = current_scheduled_time + datetime.timedelta(hours=24)
+            
+            await db.get_posts_col().update_one(
+                {"post_id": post_id},
+                {"$set": {"status": "rotation_waiting"}}
+            )
+            await db.get_posts_col().update_one(
+                {"post_id": next_post_id},
+                {
+                    "$set": {
+                        "status": "pending",
+                        "scheduled_time": new_scheduled_time,
+                        "next_execution_time": new_scheduled_time
+                    }
+                }
+            )
+            reminders = next_post.get("schedule_config", {}).get("reminders", [])
+            schedule_post_jobs(next_post_id, new_scheduled_time, reminders)
+            logger.info(f"Failed to send rotation post {post_id}. Rotated to next post {next_post_id} at {new_scheduled_time}")
+        else:
+            await db.update_post_status(post_id, "failed")
 
 
 def schedule_post_jobs(post_id: str, scheduled_time: datetime.datetime, reminders: List[int]):
@@ -261,7 +368,7 @@ def calculate_next_delivery_time(schedule_config: Dict[str, Any], last_time: Opt
     now = datetime.datetime.now(timezone)
     mode = schedule_config.get("mode")
     
-    if mode == "fixed":
+    if mode in ["fixed", "daily_infinite", "rotation"]:
         time_str = schedule_config.get("time", "12:00")
         hh, mm = map(int, time_str.split(":"))
         target = now.replace(hour=hh, minute=mm, second=0, microsecond=0)
@@ -327,7 +434,7 @@ def calculate_post_scheduled_time(schedule_config: Dict[str, Any], index: int, n
         now_time = datetime.datetime.now(timezone)
     mode = schedule_config.get("mode")
     
-    if mode == "fixed":
+    if mode in ["fixed", "daily_infinite", "rotation"]:
         time_str = schedule_config.get("time", "12:00")
         hh, mm = map(int, time_str.split(":"))
         target = now_time.replace(hour=hh, minute=mm, second=0, microsecond=0)

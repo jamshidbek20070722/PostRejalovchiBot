@@ -75,13 +75,14 @@ async def bot_stats_handler(message: Message):
         f"  • Yuborilgan: {post_stats['posted']}\n"
         f"  • O'chirib qo'yilgan (Pauza): {post_stats['paused']}\n"
         f"  • Xatolik: {post_stats['failed']}\n"
+        f"  • Navbatma-navbat (Kutishdagi): {post_stats.get('rotation', 0)}\n"
     )
     await message.answer(stats_msg, parse_mode="HTML")
 
 
 # --- EMERGENCY STOP (GLOBAL PAUSE) ---
 
-@router.message(F.text.in_(["⏸️ Favqulodda to'xtatish", "▶️ Ishlarni davom ettirish"]))
+@router.message(F.text.in_(["🚨 Favqulodda to'xtatish", "⏸️ Favqulodda to'xtatish", "▶️ Ishlarni davom ettirish"]))
 async def emergency_stop_handler(message: Message):
     current_pause = await db.get_global_setting("global_pause", False)
     new_pause = not current_pause
@@ -94,7 +95,7 @@ async def emergency_stop_handler(message: Message):
         await message.answer(
             "⚠️ <b>Favqulodda To'xtash faollashtirildi!</b>\n\n"
             "Barcha rejalashtirilgan ishlar to'xtatildi. Kanallarga postlar yuborilmaydi.",
-            reply_markup=kb.get_admin_menu(new_pause),
+            reply_markup=kb.get_submenu_keyboard(new_pause),
             parse_mode="HTML"
         )
     else:
@@ -103,9 +104,78 @@ async def emergency_stop_handler(message: Message):
         await message.answer(
             "✅ <b>Bot faoliyati tiklandi!</b>\n\n"
             "Tizim ishga tushirildi. Rejalashtirilgan postlar o'z vaqtida yuboriladi.",
-            reply_markup=kb.get_admin_menu(new_pause),
+            reply_markup=kb.get_submenu_keyboard(new_pause),
             parse_mode="HTML"
         )
+
+
+@router.message(F.text == "⚙️ Qo'shimcha imkoniyatlar")
+async def submenu_handler(message: Message):
+    global_pause = await db.get_global_setting("global_pause", False)
+    await message.answer("⚙️ Qo'shimcha imkoniyatlar bo'limi:", reply_markup=kb.get_submenu_keyboard(global_pause))
+
+
+@router.message(F.text == "⬅️ Orqaga")
+async def back_to_main_menu_handler(message: Message):
+    global_pause = await db.get_global_setting("global_pause", False)
+    await message.answer("🔙 Asosiy menuga qaytildi.", reply_markup=kb.get_admin_menu(global_pause))
+
+
+@router.message(F.text == "📝 Rejalangan postlar")
+async def scheduled_posts_list_handler(message: Message):
+    import re
+    pending = await db.get_pending_posts()
+    if not pending:
+        await message.answer("📝 Hali birorta post rejalashtirilmagan.")
+        return
+        
+    from services.scheduler import timezone
+    sorted_posts = []
+    for post in pending:
+        t = post["scheduled_time"]
+        if t.tzinfo is None:
+            t = timezone.localize(t)
+        sorted_posts.append((t, post))
+        
+    sorted_posts.sort(key=lambda x: x[0])
+    
+    msg = "📝 <b>Rejalashtirilgan postlar ro'yxati (Yaqin orada yuboriladigan 10 tasi):</b>\n\n"
+    
+    post_types_uz = {
+        "photo": "Rasm",
+        "video": "Video",
+        "document": "Hujjat",
+        "audio": "Audio",
+        "text": "Matn"
+    }
+    
+    channels_cache = {}
+    for i, (sched_time, post) in enumerate(sorted_posts[:10], 1):
+        ch_id = post["target_channel"]
+        if ch_id not in channels_cache:
+            channel_info = await db.get_channel(ch_id)
+            channels_cache[ch_id] = channel_info["name"] if channel_info else f"ID: {ch_id}"
+            
+        ch_name = channels_cache[ch_id]
+        
+        clean_text = re.sub(r'<[^>]+>', '', post["text"])
+        preview = clean_text[:40] + "..." if len(clean_text) > 40 else clean_text
+        if not preview.strip():
+            p_type = post["type"]
+            type_uz = post_types_uz.get(p_type, p_type.upper())
+            preview = f"[{type_uz} fayli]"
+            
+        mode_uz = "Doimiy" if post.get("schedule_config", {}).get("mode") == "daily_infinite" else "Aylanish" if post.get("schedule_config", {}).get("mode") == "rotation" else "Oddiy"
+        
+        time_str = sched_time.strftime("%d-%m-%y %H:%M")
+        msg += f"{i}. 📢 <b>{ch_name}</b> | ⏰ <code>{time_str}</code> | {mode_uz}\n"
+        msg += f"   ID: <code>{post['post_id']}</code>\n"
+        msg += f"   Matn: <i>{preview}</i>\n\n"
+        
+    if len(sorted_posts) > 10:
+        msg += f"<i>... va yana {len(sorted_posts) - 10} ta post bor.</i>"
+        
+    await message.answer(msg, parse_mode="HTML")
 
 
 # --- MANAGE CHANNELS NAVIGATION ---

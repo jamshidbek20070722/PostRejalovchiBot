@@ -3,20 +3,34 @@ from aiogram.utils.keyboard import ReplyKeyboardBuilder
 
 def get_admin_menu(global_pause: bool = False) -> ReplyKeyboardMarkup:
     builder = ReplyKeyboardBuilder()
-    pause_text = "▶️ Ishlarni davom ettirish" if global_pause else "⏸️ Favqulodda to'xtatish"
+    builder.row(
+        KeyboardButton(text="📅 Post rejalashtirish"),
+        KeyboardButton(text="📝 Rejalangan postlar")
+    )
+    builder.row(
+        KeyboardButton(text="⚙️ Qo'shimcha imkoniyatlar")
+    )
+    return builder.as_markup(resize_keyboard=True)
+
+
+def get_submenu_keyboard(global_pause: bool = False) -> ReplyKeyboardMarkup:
+    builder = ReplyKeyboardBuilder()
+    pause_text = "▶️ Ishlarni davom ettirish" if global_pause else "🚨 Favqulodda to'xtatish"
     
     builder.row(
-        KeyboardButton(text="📊 Bot statistikasi"),
-        KeyboardButton(text="➕ Post rejalashtirish"),
-        KeyboardButton(text="👀 Navbatni ko'rish")
+        KeyboardButton(text="📊 Navbatni ko'rish"),
+        KeyboardButton(text=pause_text)
     )
     builder.row(
-        KeyboardButton(text=pause_text),
-        KeyboardButton(text="📢 Kanallarni boshqarish")
+        KeyboardButton(text="📢 Kanallarni boshqarish"),
+        KeyboardButton(text="🔄 Majburiy obuna")
     )
     builder.row(
-        KeyboardButton(text="🔄 Majburiy obuna"),
-        KeyboardButton(text="👤 Adminlarni boshqarish")
+        KeyboardButton(text="👤 Adminlarni boshqarish"),
+        KeyboardButton(text="📊 Bot statistikasi")
+    )
+    builder.row(
+        KeyboardButton(text="⬅️ Orqaga")
     )
     return builder.as_markup(resize_keyboard=True)
 
@@ -86,6 +100,19 @@ def get_schedule_mode_keyboard() -> ReplyKeyboardMarkup:
         KeyboardButton(text="🎲 Tasodifiy vaqt oralig'ida")
     )
     builder.row(
+        KeyboardButton(text="🔄 Doimiy har kuni"),
+        KeyboardButton(text="🔄 Navbatma-navbat aylantirish")
+    )
+    builder.row(
+        KeyboardButton(text="❌ Bekor qilish")
+    )
+    return builder.as_markup(resize_keyboard=True)
+
+
+def get_footer_skip_keyboard() -> ReplyKeyboardMarkup:
+    builder = ReplyKeyboardBuilder()
+    builder.row(
+        KeyboardButton(text="⏭️ O'tkazib yuborish"),
         KeyboardButton(text="❌ Bekor qilish")
     )
     return builder.as_markup(resize_keyboard=True)

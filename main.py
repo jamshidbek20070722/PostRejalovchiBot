@@ -17,7 +17,6 @@ from middlewares.force_sub import ForceSubscriptionMiddleware
 from handlers.user import router as user_router
 from handlers.admin import router as admin_router
 from handlers.scheduling import router as scheduling_router
-from handlers.reaction import router as reaction_router
 from services.scheduler import init_scheduler, scheduler
 
 # Configure logging to stdout
@@ -78,7 +77,6 @@ async def main():
     dp.callback_query.outer_middleware(ForceSubscriptionMiddleware())
     
     # 4. Register Routers (order matters for FSM matching)
-    dp.include_router(reaction_router)    # Process reaction callbacks immediately
     dp.include_router(admin_router)       # Process administrative sub-menus
     dp.include_router(scheduling_router)  # Process scheduling wizard
     dp.include_router(user_router)        # Fallback to standard user commands

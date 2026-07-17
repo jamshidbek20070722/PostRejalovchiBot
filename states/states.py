@@ -19,9 +19,9 @@ class PostCreationStates(StatesGroup):
     # Ingestion flow
     waiting_for_channel = State()
     waiting_for_media_batch = State()
+    waiting_for_custom_footer = State()
     
     # Scheduling configuration
     waiting_for_schedule_mode = State()
     waiting_for_schedule_time = State()
     waiting_for_reminders = State()
-    waiting_for_reactions = State()

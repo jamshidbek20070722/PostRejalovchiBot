@@ -60,7 +60,8 @@ async def preview_queue_start(message: Message):
             # Format time beautifully
             time_str = scheduled_time.strftime("%Y-%m-%d %H:%M:%S")
             
-            text_snippet = post["text"][:60] + "..." if len(post["text"]) > 60 else post["text"]
+            clean_text = re.sub(r'<[^>]+>', '', post["text"])
+            text_snippet = clean_text[:60] + "..." if len(clean_text) > 60 else clean_text
             if not text_snippet.strip():
                 p_type = post["type"]
                 type_uz = post_types_uz.get(p_type, p_type.upper())
@@ -81,7 +82,7 @@ async def preview_queue_start(message: Message):
 
 # --- POST CREATION FLOW ---
 
-@router.message(F.text == "➕ Post rejalashtirish")
+@router.message(F.text == "📅 Post rejalashtirish")
 async def schedule_post_start(message: Message, state: FSMContext):
     channels = await db.get_all_channels()
     if not channels:
@@ -188,9 +189,35 @@ async def ingestion_done_process(message: Message, state: FSMContext):
     
     # Generate unique batch ID
     batch_id = str(uuid.uuid4())
-    post_ids = []
     
-    # Perform the batch insert operations into MongoDB (with status "draft")
+    # Update FSM state data
+    await state.update_data(temp_batch=temp_batch, batch_id=batch_id)
+    await state.set_state(PostCreationStates.waiting_for_custom_footer)
+    
+    await message.answer(
+        "Ushbu rejalashtirilayotgan postlar to'plami uchun maxsus footer (matn tagidagi havola/reklama) qo'shishni xohlaysizmi? Footer matnini yuboring yoki o'tkazib yuborish uchun /skip bosing.",
+        reply_markup=kb.get_footer_skip_keyboard(),
+        parse_mode="HTML"
+    )
+
+
+@router.message(PostCreationStates.waiting_for_custom_footer)
+async def custom_footer_process(message: Message, state: FSMContext):
+    input_text = message.text.strip() if message.text else ""
+    
+    if input_text.lower() in ["/skip", "⏭️ o'tkazib yuborish"]:
+        custom_footer = ""
+    else:
+        # Preserve HTML formatting
+        custom_footer = message.html_text or message.text or ""
+        
+    data = await state.get_data()
+    temp_batch = data.get("temp_batch", [])
+    target_channel = data.get("target_channel")
+    batch_id = data.get("batch_id")
+    
+    post_ids = []
+    # Save the posts with the custom footer to MongoDB as drafts
     for item in temp_batch:
         post_id = str(uuid.uuid4())
         await db.create_post(
@@ -202,12 +229,12 @@ async def ingestion_done_process(message: Message, state: FSMContext):
             status="draft",
             caption=item["caption"],
             media_type=item["media_type"],
-            batch_id=batch_id
+            batch_id=batch_id,
+            custom_footer=custom_footer
         )
         post_ids.append(post_id)
         
-    # Clear the cache in FSM context data
-    await state.update_data(temp_batch=[], batch_id=batch_id, post_ids=post_ids)
+    await state.update_data(temp_batch=[], post_ids=post_ids, custom_footer=custom_footer)
     
     await state.set_state(PostCreationStates.waiting_for_schedule_mode)
     await message.answer(
@@ -226,7 +253,9 @@ async def schedule_mode_selected(message: Message, state: FSMContext):
     mode_map = {
         "⏰ Har kuni (Belgilangan vaqtda)": "fixed",
         "⏳ Har N kunda": "interval",
-        "🎲 Tasodifiy vaqt oralig'ida": "random"
+        "🎲 Tasodifiy vaqt oralig'ida": "random",
+        "🔄 Doimiy har kuni": "daily_infinite",
+        "🔄 Navbatma-navbat aylantirish": "rotation"
     }
     
     if mode_text not in mode_map:
@@ -237,7 +266,7 @@ async def schedule_mode_selected(message: Message, state: FSMContext):
     await state.update_data(schedule_mode=mode)
     await state.set_state(PostCreationStates.waiting_for_schedule_time)
     
-    if mode == "fixed":
+    if mode in ["fixed", "daily_infinite", "rotation"]:
         await message.answer(
             "Har kuni qaysi vaqtda yuborilsin? Format: <code>HH:MM</code> (masalan: <code>18:30</code>)",
             reply_markup=kb.get_cancel_keyboard(),
@@ -268,7 +297,7 @@ async def schedule_time_process(message: Message, state: FSMContext):
     # Validation regex
     time_regex = r"^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$"
     
-    if mode == "fixed":
+    if mode in ["fixed", "daily_infinite", "rotation"]:
         if not re.match(time_regex, input_text):
             await message.answer("❌ Noto'g'ri vaqt formati. Format: <code>HH:MM</code> (00:00 - 23:59)", parse_mode="HTML")
             return
@@ -337,43 +366,16 @@ async def reminders_process(message: Message, state: FSMContext):
                 
     # Sort reminders descending (e.g. 30 then 15 then 5)
     reminders.sort(reverse=True)
-    await state.update_data(reminders=reminders)
     
-    await state.set_state(PostCreationStates.waiting_for_reactions)
-    await message.answer(
-        "Postga qanday reaksiya/rating tugmalari qo'shilsin?\n\n"
-        "1. Emojilarni vergul bilan kiriting (masalan: <code>🔥,👍,❤️</code>)\n"
-        "2. 1-5 Star yulduzchali reyting uchun <code>stars</code> deb yozing\n"
-        "3. Reaksiyasiz yuborish uchun <code>none</code> deb kiriting.",
-        reply_markup=kb.get_cancel_keyboard(),
-        parse_mode="HTML"
-    )
-
-
-@router.message(PostCreationStates.waiting_for_reactions)
-async def reactions_process(message: Message, state: FSMContext):
-    input_text = message.text.strip()
-    
-    reactions = []
-    if input_text.lower() == "stars":
-        reactions = ["1", "2", "3", "4", "5"]
-    elif input_text.lower() != "none":
-        # Split by comma and strip whitespace
-        reactions = [r.strip() for r in input_text.split(",") if r.strip()]
-        # Simple verification that they are emoji or strings
-        if not reactions:
-            await message.answer("❌ Noto'g'ri format. Emojilarni vergul bilan yuboring.")
-            return
-            
     # Retrieve all inputs
     data = await state.get_data()
     post_ids = data.get("post_ids", [])
-    schedule_config = data.get("schedule_config")
-    reminders = data.get("reminders", [])
+    schedule_config = data.get("schedule_config", {})
+    mode = schedule_config.get("mode")
     
-    # Store reactions list inside schedule_config
-    schedule_config["reactions"] = reactions
+    # Store reminders list inside schedule_config and empty reactions list
     schedule_config["reminders"] = reminders
+    schedule_config["reactions"] = []
     
     now = datetime.datetime.now(timezone)
     
@@ -381,24 +383,38 @@ async def reactions_process(message: Message, state: FSMContext):
     
     # Iterate through draft posts sequentially updating them in MongoDB and creating APScheduler jobs
     for i, post_id in enumerate(post_ids):
-        # Calculate sequential time
-        scheduled_time = calculate_post_scheduled_time(schedule_config, i, now_time=now)
-        
-        # Update MongoDB doc (status to pending)
+        if mode == "rotation":
+            if i == 0:
+                # The first post is pending and scheduled
+                scheduled_time = calculate_post_scheduled_time(schedule_config, 0, now_time=now)
+                status = "pending"
+            else:
+                scheduled_time = None
+                status = "rotation_waiting"
+        else:
+            scheduled_time = calculate_post_scheduled_time(schedule_config, i, now_time=now)
+            status = "pending"
+            
         await db.get_posts_col().update_one(
             {"post_id": post_id},
             {
                 "$set": {
                     "schedule_config": schedule_config,
-                    "scheduled_time": scheduled_time,
-                    "status": "pending"
+                    "status": status,
+                    "sequence_index": i
                 }
             }
         )
-        
-        # Register in APScheduler (timezone aware)
-        schedule_post_jobs(post_id, scheduled_time, reminders)
-        
+        if scheduled_time is not None:
+            await db.get_posts_col().update_one(
+                {"post_id": post_id},
+                {"$set": {"scheduled_time": scheduled_time}}
+            )
+            
+        # Register in APScheduler (only if status is pending)
+        if status == "pending" and scheduled_time is not None:
+            schedule_post_jobs(post_id, scheduled_time, reminders)
+            
     await state.clear()
     
     # Show main admin menu and confirmation

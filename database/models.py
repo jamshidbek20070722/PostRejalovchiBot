@@ -120,7 +120,10 @@ async def create_post(
     status: str = "pending",
     caption: Optional[str] = None,
     media_type: Optional[str] = None,
-    batch_id: Optional[str] = None
+    batch_id: Optional[str] = None,
+    custom_footer: Optional[str] = None,
+    sequence_index: Optional[int] = None,
+    next_execution_time: Optional[datetime.datetime] = None
 ) -> bool:
     post_doc = {
         "post_id": post_id,
@@ -139,6 +142,12 @@ async def create_post(
         post_doc["scheduled_time"] = scheduled_time
     if batch_id is not None:
         post_doc["batch_id"] = batch_id
+    if custom_footer is not None:
+        post_doc["custom_footer"] = custom_footer
+    if sequence_index is not None:
+        post_doc["sequence_index"] = sequence_index
+    if next_execution_time is not None:
+        post_doc["next_execution_time"] = next_execution_time
         
     await get_posts_col().insert_one(post_doc)
     return True
@@ -170,12 +179,14 @@ async def get_post_stats() -> Dict[str, Any]:
     posted = await get_posts_col().count_documents({"status": "posted"})
     failed = await get_posts_col().count_documents({"status": "failed"})
     paused = await get_posts_col().count_documents({"status": "paused"})
+    rotation = await get_posts_col().count_documents({"status": "rotation_waiting"})
     return {
         "total": total,
         "pending": pending,
         "posted": posted,
         "failed": failed,
-        "paused": paused
+        "paused": paused,
+        "rotation": rotation
     }
 
 
