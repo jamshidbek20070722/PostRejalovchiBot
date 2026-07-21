@@ -19,8 +19,10 @@ logger = logging.getLogger(__name__)
 router = Router()
 
 # Helper to verify user is admin/owner
-async def is_admin_filter(message: Message, db_user: dict) -> bool:
-    return message.from_user.id == config.OWNER_ID
+async def is_admin_filter(message: Message, db_user: dict = None) -> bool:
+    if message.from_user.id == config.OWNER_ID:
+        return True
+    return db_user is not None and db_user.get("role") in ["admin", "owner"]
 
 router.message.filter(is_admin_filter)
 

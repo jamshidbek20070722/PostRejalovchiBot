@@ -14,13 +14,20 @@ from services.scheduler import scheduler
 logger = logging.getLogger(__name__)
 router = Router()
 
-# Custom Filter to check if user is admin/owner (strictly OWNER_ID)
-async def is_admin_filter(message: Message, db_user: dict) -> bool:
-    return message.from_user.id == config.OWNER_ID
+# Custom Filter to check if user is admin/owner
+async def is_admin_filter(message: Message, db_user: dict = None) -> bool:
+    if message.from_user.id == config.OWNER_ID:
+        return True
+    return db_user is not None and db_user.get("role") in ["admin", "owner"]
+
+async def is_admin_callback_filter(callback: CallbackQuery, db_user: dict = None) -> bool:
+    if callback.from_user.id == config.OWNER_ID:
+        return True
+    return db_user is not None and db_user.get("role") in ["admin", "owner"]
 
 # Apply Admin Filter to all routes in this router
 router.message.filter(is_admin_filter)
-router.callback_query.filter(lambda c: c.from_user.id == config.OWNER_ID)
+router.callback_query.filter(is_admin_callback_filter)
 
 
 # --- GENERAL NAVIGATION & CANCEL ---
@@ -90,6 +97,7 @@ async def emergency_stop_handler(message: Message):
     new_pause = not current_pause
     
     await db.set_global_setting("global_pause", new_pause)
+    is_owner = message.from_user.id == config.OWNER_ID
     
     if new_pause:
         scheduler.pause()
@@ -97,7 +105,7 @@ async def emergency_stop_handler(message: Message):
         await message.answer(
             "⚠️ <b>Favqulodda To'xtash faollashtirildi!</b>\n\n"
             "Barcha rejalashtirilgan ishlar to'xtatildi. Kanallarga postlar yuborilmaydi.",
-            reply_markup=kb.get_submenu_keyboard(new_pause),
+            reply_markup=kb.get_submenu_keyboard(new_pause, is_owner),
             parse_mode="HTML"
         )
     else:
@@ -106,7 +114,7 @@ async def emergency_stop_handler(message: Message):
         await message.answer(
             "✅ <b>Bot faoliyati tiklandi!</b>\n\n"
             "Tizim ishga tushirildi. Rejalashtirilgan postlar o'z vaqtida yuboriladi.",
-            reply_markup=kb.get_submenu_keyboard(new_pause),
+            reply_markup=kb.get_submenu_keyboard(new_pause, is_owner),
             parse_mode="HTML"
         )
 
@@ -114,7 +122,8 @@ async def emergency_stop_handler(message: Message):
 @router.message(F.text == "⚙️ Qo'shimcha imkoniyatlar")
 async def submenu_handler(message: Message):
     global_pause = await db.get_global_setting("global_pause", False)
-    await message.answer("⚙️ Qo'shimcha imkoniyatlar bo'limi:", reply_markup=kb.get_submenu_keyboard(global_pause))
+    is_owner = message.from_user.id == config.OWNER_ID
+    await message.answer("⚙️ Qo'shimcha imkoniyatlar bo'limi:", reply_markup=kb.get_submenu_keyboard(global_pause, is_owner))
 
 
 @router.message(F.text == "⬅️ Orqaga")
@@ -572,17 +581,19 @@ async def force_sub_toggle_process(message: Message, state: FSMContext):
 
 # --- MANAGE ADMINS ---
 
-@router.message(F.text == "👤 Adminlarni boshqarish")
-async def manage_admins_menu_handler(message: Message, db_user: dict):
-    # Only owners can manage other admins
-    if db_user.get("role") != "owner":
-        await message.answer("❌ Adminlarni boshqarish faqat Asosiy Ega (Owner) uchun ruxsat etilgan.")
+@router.message(F.text.in_(["👑 Adminlarni boshqarish", "👤 Adminlarni boshqarish"]))
+async def manage_admins_menu_handler(message: Message):
+    if message.from_user.id != config.OWNER_ID:
+        await message.answer("⚠️ Ushbu bo'lim faqat bot egasi (Owner) uchun ochiq!")
         return
     await message.answer("👤 Adminlarni boshqarish bo'limi:", reply_markup=kb.get_admins_menu())
 
 
 @router.message(F.text == "📋 Adminlar ro'yxati")
 async def list_admins_handler(message: Message):
+    if message.from_user.id != config.OWNER_ID:
+        await message.answer("⚠️ Ushbu bo'lim faqat bot egasi (Owner) uchun ochiq!")
+        return
     admins = await db.get_admins()
     msg = "👤 <b>Bot Administratorlari ro'yxati:</b>\n\n"
     for adm in admins:
@@ -592,12 +603,19 @@ async def list_admins_handler(message: Message):
 
 @router.message(F.text == "➕ Admin qo'shish")
 async def add_admin_start(message: Message, state: FSMContext):
+    if message.from_user.id != config.OWNER_ID:
+        await message.answer("⚠️ Ushbu bo'lim faqat bot egasi (Owner) uchun ochiq!")
+        return
     await state.set_state(AdminStates.adding_admin)
     await message.answer("Yangi admin Telegram ID sini yuboring:", reply_markup=kb.get_cancel_keyboard())
 
 
 @router.message(AdminStates.adding_admin)
 async def add_admin_process(message: Message, state: FSMContext):
+    if message.from_user.id != config.OWNER_ID:
+        await state.clear()
+        await message.answer("⚠️ Ushbu bo'lim faqat bot egasi (Owner) uchun ochiq!")
+        return
     try:
         user_id = int(message.text.strip())
     except ValueError:
@@ -620,12 +638,19 @@ async def add_admin_process(message: Message, state: FSMContext):
 
 @router.message(F.text == "➖ Adminni o'chirish")
 async def remove_admin_start(message: Message, state: FSMContext):
+    if message.from_user.id != config.OWNER_ID:
+        await message.answer("⚠️ Ushbu bo'lim faqat bot egasi (Owner) uchun ochiq!")
+        return
     await state.set_state(AdminStates.removing_admin)
     await message.answer("Chetlatmoqchi bo'lgan adminingiz Telegram ID sini yuboring:", reply_markup=kb.get_cancel_keyboard())
 
 
 @router.message(AdminStates.removing_admin)
 async def remove_admin_process(message: Message, state: FSMContext):
+    if message.from_user.id != config.OWNER_ID:
+        await state.clear()
+        await message.answer("⚠️ Ushbu bo'lim faqat bot egasi (Owner) uchun ochiq!")
+        return
     try:
         user_id = int(message.text.strip())
     except ValueError:

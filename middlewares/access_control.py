@@ -4,6 +4,7 @@ from aiogram import BaseMiddleware
 from aiogram.types import TelegramObject, Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 
 import config
+import database.models as db
 
 logger = logging.getLogger(__name__)
 
@@ -19,11 +20,11 @@ class AccessControlMiddleware(BaseMiddleware):
             user_id = event.from_user.id
             
         if user_id:
-            # If the user is the owner, allow all access
-            if user_id == config.OWNER_ID:
+            # Check if the user is authorized as an Admin (Owner or DB Admin)
+            if await db.is_admin(user_id):
                 return await handler(event, data)
                 
-            # If not owner:
+            # If not admin:
             if isinstance(event, Message):
                 # Allow CommandStart (/start)
                 if event.text and event.text.startswith("/start"):

@@ -13,11 +13,13 @@ logger = logging.getLogger(__name__)
 router = Router()
 
 @router.message(CommandStart())
-async def start_handler(message: Message, state: FSMContext):
+async def start_handler(message: Message, state: FSMContext, db_user: dict = None):
     # Clear state first
     await state.clear()
     
-    if message.from_user.id != int(config.OWNER_ID):
+    is_user_admin = message.from_user.id == config.OWNER_ID or (db_user is not None and db_user.get("role") in ["admin", "owner"])
+    
+    if not is_user_admin:
         await message.answer(
             "👋 Xush kelibsiz!\n\nBu bot faqatgina kanal administratorlari uchun "
             "postlarni rejalashtirish maqsadida yaratilgan maxsus tizimdir.\n"

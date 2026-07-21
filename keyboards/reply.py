@@ -13,7 +13,7 @@ def get_admin_menu(global_pause: bool = False) -> ReplyKeyboardMarkup:
     return builder.as_markup(resize_keyboard=True)
 
 
-def get_submenu_keyboard(global_pause: bool = False) -> ReplyKeyboardMarkup:
+def get_submenu_keyboard(global_pause: bool = False, is_owner: bool = False) -> ReplyKeyboardMarkup:
     builder = ReplyKeyboardBuilder()
     pause_text = "▶️ Ishlarni davom ettirish" if global_pause else "🚨 Favqulodda to'xtatish"
     
@@ -21,14 +21,15 @@ def get_submenu_keyboard(global_pause: bool = False) -> ReplyKeyboardMarkup:
         KeyboardButton(text="📊 Navbatni ko'rish"),
         KeyboardButton(text=pause_text)
     )
-    builder.row(
-        KeyboardButton(text="📢 Kanallarni boshqarish"),
-        KeyboardButton(text="🔄 Majburiy obuna")
-    )
-    builder.row(
-        KeyboardButton(text="👤 Adminlarni boshqarish"),
-        KeyboardButton(text="📊 Bot statistikasi")
-    )
+    if is_owner:
+        builder.row(
+            KeyboardButton(text="📢 Kanallarni boshqarish"),
+            KeyboardButton(text="👑 Adminlarni boshqarish")
+        )
+    else:
+        builder.row(
+            KeyboardButton(text="📢 Kanallarni boshqarish")
+        )
     builder.row(
         KeyboardButton(text="⬅️ Orqaga")
     )

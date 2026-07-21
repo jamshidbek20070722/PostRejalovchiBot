@@ -1,5 +1,6 @@
 import datetime
 from typing import List, Dict, Any, Optional
+import config
 from database.connection import db_manager
 
 # Collections getters helper
@@ -253,3 +254,10 @@ async def get_global_setting(key: str, default: Any = None) -> Any:
     if doc:
         return doc["value"]
     return default
+
+
+async def is_admin(user_id: int) -> bool:
+    if user_id == config.OWNER_ID:
+        return True
+    user = await get_user(user_id)
+    return user is not None and user.get("role") in ["admin", "owner"]
