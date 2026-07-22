@@ -7,6 +7,9 @@ from database.connection import db_manager
 def get_users_col():
     return db_manager.get_db()["users"]
 
+def get_admins_col():
+    return db_manager.get_db()["admins"]
+
 def get_channels_col():
     return db_manager.get_db()["channels"]
 
@@ -43,8 +46,63 @@ async def update_user_role(user_id: int, role: str) -> bool:
     return res.modified_count > 0
 
 async def get_admins() -> List[Dict[str, Any]]:
-    cursor = get_users_col().find({"role": {"$in": ["admin", "owner"]}})
-    return await cursor.to_list(length=100)
+    admins_from_col = await get_admins_col().find({}).to_list(length=100)
+    users_from_col = await get_users_col().find({"role": {"$in": ["admin", "owner"]}}).to_list(length=100)
+    
+    seen_ids = set()
+    result = []
+    
+    for adm in admins_from_col:
+        uid = adm.get("user_id") or adm.get("id")
+        if uid:
+            try:
+                uid_int = int(uid)
+            except (ValueError, TypeError):
+                uid_int = uid
+            if uid_int not in seen_ids:
+                seen_ids.add(uid_int)
+                result.append({"id": uid_int, "role": "admin"})
+            
+    for usr in users_from_col:
+        uid = usr.get("id") or usr.get("user_id")
+        if uid:
+            try:
+                uid_int = int(uid)
+            except (ValueError, TypeError):
+                uid_int = uid
+            if uid_int not in seen_ids:
+                seen_ids.add(uid_int)
+                result.append({"id": uid_int, "role": usr.get("role", "admin")})
+            
+    return result
+
+async def add_admin_db(user_id: int) -> bool:
+    target_id = int(user_id)
+    now = datetime.datetime.now(datetime.timezone.utc)
+    await get_admins_col().update_one(
+        {"user_id": target_id},
+        {"$set": {"user_id": target_id, "added_at": now}},
+        upsert=True
+    )
+    existing_user = await get_user(target_id)
+    if not existing_user:
+        await register_user(target_id, role="admin")
+    else:
+        await update_user_role(target_id, "admin")
+    return True
+
+async def remove_admin_db(user_id: int) -> bool:
+    target_id = int(user_id)
+    await get_admins_col().delete_many({
+        "$or": [
+            {"user_id": target_id},
+            {"user_id": str(target_id)},
+            {"id": target_id},
+            {"id": str(target_id)}
+        ]
+    })
+    await update_user_role(target_id, "user")
+    return True
 
 async def get_user_stats() -> Dict[str, Any]:
     total_users = await get_users_col().count_documents({})
@@ -256,8 +314,39 @@ async def get_global_setting(key: str, default: Any = None) -> Any:
     return default
 
 
-async def is_admin(user_id: int) -> bool:
-    if user_id == config.OWNER_ID:
+async def is_admin(user_id: Any) -> bool:
+    try:
+        target_id = int(user_id)
+    except (ValueError, TypeError):
+        return False
+        
+    try:
+        owner_id = int(config.OWNER_ID)
+    except (ValueError, TypeError):
+        owner_id = config.OWNER_ID
+
+    if target_id == owner_id:
         return True
-    user = await get_user(user_id)
-    return user is not None and user.get("role") in ["admin", "owner"]
+        
+    # 1. Check admins collection (both int and str user_id/id)
+    admin_doc = await get_admins_col().find_one({
+        "$or": [
+            {"user_id": target_id},
+            {"user_id": str(target_id)},
+            {"id": target_id},
+            {"id": str(target_id)}
+        ]
+    })
+    if admin_doc is not None:
+        return True
+        
+    # 2. Check users collection (both int and str id/user_id with role in admin/owner)
+    user_doc = await get_users_col().find_one({
+        "$or": [
+            {"id": target_id, "role": {"$in": ["admin", "owner"]}},
+            {"id": str(target_id), "role": {"$in": ["admin", "owner"]}},
+            {"user_id": target_id, "role": {"$in": ["admin", "owner"]}},
+            {"user_id": str(target_id), "role": {"$in": ["admin", "owner"]}}
+        ]
+    })
+    return user_doc is not None

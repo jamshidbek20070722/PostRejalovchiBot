@@ -622,15 +622,16 @@ async def add_admin_process(message: Message, state: FSMContext):
         await message.answer("❌ Telegram ID raqamlardan iborat bo'lishi lozim.")
         return
         
-    user = await db.get_user(user_id)
-    if not user:
-        # Register user first
-        await db.register_user(user_id, role="admin")
-    else:
-        if user["role"] == "owner":
-            await message.answer("❌ Ushbu foydalanuvchi allaqachon bot egasi.")
-            return
-        await db.update_user_role(user_id, "admin")
+    try:
+        owner_id = int(config.OWNER_ID)
+    except (ValueError, TypeError):
+        owner_id = config.OWNER_ID
+        
+    if user_id == owner_id:
+        await message.answer("❌ Ushbu foydalanuvchi allaqachon bot egasi.")
+        return
+        
+    await db.add_admin_db(user_id)
         
     await state.clear()
     await message.answer(f"✅ Foydalanuvchi {user_id} bot admini etib tayinlandi.", reply_markup=kb.get_admins_menu())
@@ -657,19 +658,20 @@ async def remove_admin_process(message: Message, state: FSMContext):
         await message.answer("❌ Telegram ID raqamlardan iborat bo'lishi lozim.")
         return
         
-    user = await db.get_user(user_id)
-    if not user:
-        await message.answer("❌ Foydalanuvchi bazadan topilmadi.")
-        return
+    try:
+        owner_id = int(config.OWNER_ID)
+    except (ValueError, TypeError):
+        owner_id = config.OWNER_ID
         
-    if user["role"] == "owner":
+    if user_id == owner_id:
         await message.answer("❌ Bot egasini adminlikdan olib tashlab bo'lmaydi.")
         return
         
-    if user["role"] != "admin":
+    is_adm = await db.is_admin(user_id)
+    if not is_adm:
         await message.answer("❌ Ushbu foydalanuvchi admin emas.")
         return
         
-    await db.update_user_role(user_id, "user")
+    await db.remove_admin_db(user_id)
     await state.clear()
     await message.answer(f"✅ Foydalanuvchi {user_id} adminlikdan chetlatildi.", reply_markup=kb.get_admins_menu())
