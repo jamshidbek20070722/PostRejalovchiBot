@@ -213,7 +213,8 @@ async def process_forwarded_posts(message: Message, state: FSMContext):
         "original_message_id": message.message_id,
         "file_id": file_id,
         "media_type": media_type,
-        "caption": caption
+        "caption": caption,
+        "media_group_id": message.media_group_id
     })
     
     await state.update_data(temp_batch=temp_batch)
@@ -231,7 +232,47 @@ async def ingestion_done_process(message: Message, state: FSMContext):
     # Sort the cached temp_batch explicitly by Telegram's native message.message_id
     temp_batch.sort(key=lambda x: x["message_id"])
     
-    await state.update_data(temp_batch=temp_batch)
+    # Group albums by media_group_id
+    grouped_batch = []
+    album_groups = {}
+    
+    for item in temp_batch:
+        mg_id = item.get("media_group_id")
+        if mg_id:
+            if mg_id not in album_groups:
+                album_groups[mg_id] = []
+            album_groups[mg_id].append(item)
+        else:
+            grouped_batch.append(item)
+            
+    for mg_id, group_items in album_groups.items():
+        # Combine into a single album post
+        first_item = group_items[0]
+        # Find the first non-empty caption in the group
+        album_caption = ""
+        for it in group_items:
+            if it.get("caption"):
+                album_caption = it["caption"]
+                break
+                
+        album_media = [{"file_id": it["file_id"], "media_type": it["media_type"]} for it in group_items if it.get("file_id")]
+        original_message_ids = [it["original_message_id"] for it in group_items]
+        
+        grouped_batch.append({
+            "message_id": first_item["message_id"],
+            "original_chat_id": first_item["original_chat_id"],
+            "original_message_id": first_item["original_message_id"],
+            "original_message_ids": original_message_ids,
+            "file_id": None,
+            "media_type": "album",
+            "caption": album_caption,
+            "album_media": album_media
+        })
+        
+    # Re-sort after grouping just in case
+    grouped_batch.sort(key=lambda x: x["message_id"])
+    
+    await state.update_data(temp_batch=grouped_batch)
     await state.set_state(PostCreationStates.waiting_for_batch_name)
     
     await message.answer(
@@ -302,17 +343,19 @@ async def custom_footer_process(message: Message, state: FSMContext):
         post_id = str(uuid.uuid4())
         await db.create_post(
             post_id=post_id,
-            file_id=item["file_id"],
-            text=item["caption"],
+            file_id=item.get("file_id"),
+            text=item.get("caption") or "",
             post_type=item["media_type"],
             target_channel=target_channel,
             status="draft",
-            caption=item["caption"],
+            caption=item.get("caption"),
             media_type=item["media_type"],
             batch_id=batch_id,
             custom_footer=custom_footer,
             original_chat_id=item.get("original_chat_id"),
-            original_message_id=item.get("original_message_id")
+            original_message_id=item.get("original_message_id"),
+            album_media=item.get("album_media"),
+            original_message_ids=item.get("original_message_ids")
         )
         post_ids.append(post_id)
         

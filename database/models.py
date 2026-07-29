@@ -225,7 +225,9 @@ async def create_post(
     sequence_index: Optional[int] = None,
     next_execution_time: Optional[datetime.datetime] = None,
     original_chat_id: Optional[int] = None,
-    original_message_id: Optional[int] = None
+    original_message_id: Optional[int] = None,
+    album_media: Optional[List[Dict[str, Any]]] = None,
+    original_message_ids: Optional[List[int]] = None
 ) -> bool:
     post_doc = {
         "post_id": post_id,
@@ -254,6 +256,10 @@ async def create_post(
         post_doc["original_chat_id"] = original_chat_id
     if original_message_id is not None:
         post_doc["original_message_id"] = original_message_id
+    if album_media is not None:
+        post_doc["album_media"] = album_media
+    if original_message_ids is not None:
+        post_doc["original_message_ids"] = original_message_ids
         
     await get_posts_col().insert_one(post_doc)
     return True

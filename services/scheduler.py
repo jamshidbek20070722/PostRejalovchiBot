@@ -7,7 +7,7 @@ from uuid import uuid4
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.date import DateTrigger
 from aiogram import Bot
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, InputMediaPhoto, InputMediaVideo, InputMediaDocument, InputMediaAudio
 
 import config
 import database.models as db
@@ -100,7 +100,8 @@ async def send_scheduled_post_job(post_id: str):
     final_text = text or ""
     if remove_links:
         import re
-        final_text = re.sub(r'^.*(?:t\.me/|telegram\.me/|@\w+).*$\n?', '', final_text, flags=re.MULTILINE)
+        final_text = re.sub(r'(?im)^.*(?:@\w+|https?://t\.me/|t\.me/|telegram\.me/).*$\n?', '', final_text)
+        final_text = re.sub(r'\n{3,}', '\n\n', final_text).strip()
         
     if target_footer:
         if final_text.strip():
@@ -112,25 +113,58 @@ async def send_scheduled_post_job(post_id: str):
     is_modified = remove_links or bool(target_footer)
     orig_chat = post.get("original_chat_id")
     orig_msg = post.get("original_message_id")
+    orig_msg_ids = post.get("original_message_ids")
     
     sent_msg = None
     try:
-        if not is_modified and orig_chat and orig_msg:
+        if not is_modified and orig_chat:
             # Send as raw copy to preserve all tg-emojis perfectly
-            try:
-                sent_msg = await _bot.copy_message(
-                    chat_id=channel_id,
-                    from_chat_id=orig_chat,
-                    message_id=orig_msg
-                )
-            except Exception as e:
-                logger.warning(f"Failed to copy message {orig_msg} from {orig_chat}: {e}. Falling back to normal send.")
-                # We will fall back to normal send below if sent_msg is still None
-                pass
+            if post_type == "album" and orig_msg_ids:
+                try:
+                    sent_msgs = await _bot.copy_messages(
+                        chat_id=channel_id,
+                        from_chat_id=orig_chat,
+                        message_ids=orig_msg_ids
+                    )
+                    sent_msg = sent_msgs[0] if sent_msgs else None
+                except Exception as e:
+                    logger.warning(f"Failed to copy album {orig_msg_ids} from {orig_chat}: {e}. Falling back.")
+                    pass
+            elif orig_msg:
+                try:
+                    sent_msg = await _bot.copy_message(
+                        chat_id=channel_id,
+                        from_chat_id=orig_chat,
+                        message_id=orig_msg
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to copy message {orig_msg} from {orig_chat}: {e}. Falling back.")
+                    pass
+
 
         if not sent_msg:
             # Fallback to standard sending with parsed HTML
-            if post_type == "text":
+            if post_type == "album":
+                media = []
+                album_media = post.get("album_media", [])
+                for i, am in enumerate(album_media):
+                    m_type = am.get("media_type")
+                    f_id = am.get("file_id")
+                    if not f_id:
+                        continue
+                    cap = final_text if i == 0 else None
+                    if m_type == "photo":
+                        media.append(InputMediaPhoto(media=f_id, caption=cap, parse_mode="HTML" if cap else None))
+                    elif m_type == "video":
+                        media.append(InputMediaVideo(media=f_id, caption=cap, parse_mode="HTML" if cap else None))
+                    elif m_type == "document":
+                        media.append(InputMediaDocument(media=f_id, caption=cap, parse_mode="HTML" if cap else None))
+                    elif m_type == "audio":
+                        media.append(InputMediaAudio(media=f_id, caption=cap, parse_mode="HTML" if cap else None))
+                if media:
+                    sent_msgs = await _bot.send_media_group(chat_id=channel_id, media=media)
+                    sent_msg = sent_msgs[0] if sent_msgs else None
+            elif post_type == "text":
                 sent_msg = await _bot.send_message(
                     chat_id=channel_id,
                     text=final_text,
