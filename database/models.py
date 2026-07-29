@@ -22,6 +22,9 @@ def get_reactions_col():
 def get_settings_col():
     return db_manager.get_db()["settings"]
 
+def get_batches_col():
+    return db_manager.get_db()["batches"]
+
 
 # --- USER OPERATIONS ---
 
@@ -166,6 +169,44 @@ async def toggle_channel_force_sub(channel_id: int, is_force_sub: bool) -> bool:
     return res.modified_count > 0
 
 
+# --- BATCH OPERATIONS ---
+
+async def create_batch(
+    batch_id: str,
+    name: str,
+    channel_id: int,
+    schedule_mode: str,
+    schedule_time: Optional[Dict[str, Any]] = None,
+    footer_text: Optional[str] = None,
+    remove_links: bool = False,
+    status: str = "active"
+) -> bool:
+    batch_doc = {
+        "batch_id": batch_id,
+        "name": name,
+        "channel_id": channel_id,
+        "schedule_mode": schedule_mode,
+        "schedule_time": schedule_time,
+        "footer_text": footer_text,
+        "remove_links": remove_links,
+        "status": status,
+        "created_at": datetime.datetime.now(datetime.timezone.utc)
+    }
+    await get_batches_col().insert_one(batch_doc)
+    return True
+
+async def get_batch(batch_id: str) -> Optional[Dict[str, Any]]:
+    return await get_batches_col().find_one({"batch_id": batch_id})
+
+async def get_all_batches() -> List[Dict[str, Any]]:
+    cursor = get_batches_col().find({}).sort("created_at", -1)
+    return await cursor.to_list(length=1000)
+
+async def delete_batch(batch_id: str) -> bool:
+    res = await get_batches_col().delete_one({"batch_id": batch_id})
+    return res.deleted_count > 0
+
+
 # --- POST OPERATIONS ---
 
 async def create_post(
@@ -182,7 +223,9 @@ async def create_post(
     batch_id: Optional[str] = None,
     custom_footer: Optional[str] = None,
     sequence_index: Optional[int] = None,
-    next_execution_time: Optional[datetime.datetime] = None
+    next_execution_time: Optional[datetime.datetime] = None,
+    original_chat_id: Optional[int] = None,
+    original_message_id: Optional[int] = None
 ) -> bool:
     post_doc = {
         "post_id": post_id,
@@ -207,6 +250,10 @@ async def create_post(
         post_doc["sequence_index"] = sequence_index
     if next_execution_time is not None:
         post_doc["next_execution_time"] = next_execution_time
+    if original_chat_id is not None:
+        post_doc["original_chat_id"] = original_chat_id
+    if original_message_id is not None:
+        post_doc["original_message_id"] = original_message_id
         
     await get_posts_col().insert_one(post_doc)
     return True

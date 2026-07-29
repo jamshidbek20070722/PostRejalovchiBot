@@ -134,23 +134,16 @@ async def back_to_main_menu_handler(message: Message):
 
 @router.message(F.text == "📝 Rejalangan postlar")
 async def scheduled_posts_list_handler(message: Message):
-    import re
+    batches = await db.get_all_batches()
+    
     pending = await db.get_pending_posts()
-    if not pending:
-        await message.answer("📝 Hali birorta post rejalashtirilmagan.")
+    standalone = [p for p in pending if not p.get("batch_id")]
+    
+    if not batches and not standalone:
+        await message.answer("📝 Hali birorta post to'plami rejalashtirilmagan.")
         return
         
-    from services.scheduler import timezone
-    sorted_posts = []
-    for post in pending:
-        t = post["scheduled_time"]
-        if t.tzinfo is None:
-            t = timezone.localize(t)
-        sorted_posts.append((t, post))
-        
-    sorted_posts.sort(key=lambda x: x[0])
-    
-    msg = "📝 <b>Rejalashtirilgan postlar ro'yxati (Yaqin orada yuboriladigan 10 tasi):</b>\n\n"
+    msg = "📝 <b>Rejalashtirilgan to'plamlar ro'yxati:</b>\n\n"
     
     mode_labels = {
         "fixed": "Bir martalik",
@@ -161,8 +154,10 @@ async def scheduled_posts_list_handler(message: Message):
     }
     
     channels_cache = {}
-    for i, (sched_time, post) in enumerate(sorted_posts[:10], 1):
-        ch_id = post["target_channel"]
+    active_batches = [b for b in batches if b.get("status") != "deleted"][:10]
+    
+    for i, batch in enumerate(active_batches, 1):
+        ch_id = batch.get("channel_id")
         if ch_id not in channels_cache:
             channel_info = await db.get_channel(ch_id)
             if channel_info:
@@ -172,195 +167,127 @@ async def scheduled_posts_list_handler(message: Message):
             channels_cache[ch_id] = ch_name
             
         ch_name = channels_cache[ch_id]
-        
-        mode = post.get("schedule_config", {}).get("mode", "fixed")
+        mode = batch.get("schedule_mode", "fixed")
         mode_uz = mode_labels.get(mode, "Bir martalik")
         
-        time_str = sched_time.strftime("%d.%m.%Y %H:%M")
+        time_info = batch.get("schedule_time", {})
+        if mode in ["fixed", "daily_infinite", "rotation"]:
+            time_str = time_info.get("time", "Noma'lum")
+        elif mode == "interval":
+            t_val = time_info.get("time", "Noma'lum")
+            time_str = f"Har {time_info.get('interval_days', 1)} kunda, {t_val}"
+        elif mode == "random":
+            window = time_info.get("random_window", {})
+            time_str = f"{window.get('start', '?')}-{window.get('end', '?')}"
+        else:
+            time_str = "Noma'lum"
+            
+        footer_status = "Bor" if batch.get("footer_text") else "Yo'q"
+        link_status = "O'chiriladi" if batch.get("remove_links") else "Qoladi"
         
-        msg += f"{i}. 📢 Kanal: {ch_name}\n"
-        msg += f"🔄 Rejim: {mode_uz} | ⏰ Vaqt: {time_str}\n"
+        msg += f"{i}. 🗂 To'plam: <b>{batch.get('name')}</b>\n"
+        msg += f"📢 Kanal: {ch_name} | 🔄 Rejim: {mode_uz}\n"
+        msg += f"⏰ Vaqt: {time_str} | 🔗 Havolalar: {link_status} | 📝 Footer: {footer_status}\n"
         msg += f"---\n"
         
-    if len(sorted_posts) > 10:
-        msg += f"\n<i>... va yana {len(sorted_posts) - 10} ta post bor.</i>\n"
+    if len(batches) > 10:
+        msg += f"\n<i>... va yana {len(batches) - 10} ta to'plam bor.</i>\n"
         
-    msg += "\n🔍 Post tafsilotlarini ko'rish, tahrirlash yoki o'chirish uchun quyidagi raqamlardan birini tanlang:"
+    if standalone:
+        msg += f"\n<i>Eslatma: Tizimda to'plamga kiritilmagan {len(standalone)} ta alohida post mavjud. Ular umumiy navbatda ko'rsatiladi.</i>\n"
+        
+    msg += "\n🔍 To'plam tafsilotlarini ko'rish yoki o'chirish uchun quyidagi raqamlardan birini tanlang:"
     
     builder = InlineKeyboardBuilder()
     number_emojis = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"]
-    for i, (sched_time, post) in enumerate(sorted_posts[:10], 1):
+    for i, batch in enumerate(active_batches, 1):
         label = number_emojis[i-1] if i-1 < len(number_emojis) else str(i)
-        builder.add(InlineKeyboardButton(text=label, callback_data=f"select_post:{post['post_id']}"))
+        builder.add(InlineKeyboardButton(text=label, callback_data=f"select_batch:{batch['batch_id']}"))
         
     builder.adjust(5)
-    
     await message.answer(msg, parse_mode="HTML", reply_markup=builder.as_markup())
 
 
-# Callback query to select a scheduled post for viewing
-@router.callback_query(F.data.startswith("select_post:"))
-async def select_post_callback(callback: CallbackQuery):
-    post_id = callback.data.split(":")[1]
-    post = await db.get_post(post_id)
-    if not post:
-        await callback.answer("❌ Post topilmadi!", show_alert=True)
+@router.callback_query(F.data.startswith("select_batch:"))
+async def select_batch_callback(callback: CallbackQuery):
+    batch_id = callback.data.split(":")[1]
+    batch = await db.get_batch(batch_id)
+    if not batch:
+        await callback.answer("❌ To'plam topilmadi!", show_alert=True)
         return
         
-    post_type = post["type"]
-    file_id = post["file_id"]
-    text = post["text"]
+    cursor = db.get_posts_col().find({"batch_id": batch_id})
+    posts = await cursor.to_list(length=1000)
     
-    # Fetch target channel name
-    ch_id = post["target_channel"]
+    ch_id = batch.get("channel_id")
     channel_info = await db.get_channel(ch_id)
     ch_name = channel_info.get("name") if channel_info else f"ID: {ch_id}"
     
-    # Calculate execution time
-    from services.scheduler import timezone
-    sched_time = post["scheduled_time"]
-    if sched_time.tzinfo is None:
-        sched_time = timezone.localize(sched_time)
-    time_str = sched_time.strftime("%d.%m.%Y %H:%M")
-    
-    mode_labels = {
-        "fixed": "Bir martalik",
-        "daily_infinite": "Doimiy",
-        "rotation": "Navbatma-navbat",
-        "interval": "N kunda",
-        "random": "Tasodifiy"
-    }
-    mode = post.get("schedule_config", {}).get("mode", "fixed")
-    mode_uz = mode_labels.get(mode, "Bir martalik")
-    
     header = (
-        f"📅 <b>Rejalashtirilgan post tafsilotlari:</b>\n"
+        f"🗂 <b>To'plam: {batch.get('name')}</b>\n"
         f"📢 Kanal: {ch_name}\n"
-        f"🔄 Rejim: {mode_uz} | ⏰ Vaqt: {time_str}\n\n"
-        f"📝 <b>Post matni/taglavhasi:</b>\n"
+        f"Jami postlar: {len(posts)}\n\n"
     )
     
     builder = InlineKeyboardBuilder()
     builder.row(
-        InlineKeyboardButton(text="✏️ Matnni tahrirlash", callback_data=f"edit_post:{post_id}"),
-        InlineKeyboardButton(text="🗑 O'chirish", callback_data=f"confirm_delete_post:{post_id}")
+        InlineKeyboardButton(text="🗑 To'plamni o'chirish", callback_data=f"confirm_delete_batch:{batch_id}")
     )
     builder.row(
         InlineKeyboardButton(text="🔙 Ro'yxatga qaytish", callback_data="back_to_scheduled_posts")
     )
     
     await callback.answer()
-    
-    # Send the post preview in admin chat
-    if post_type == "text":
-        await callback.message.answer(f"{header}{text}", parse_mode="HTML", reply_markup=builder.as_markup())
-    elif post_type == "photo":
-        await callback.message.answer_photo(photo=file_id, caption=f"{header}{text}"[:1024], parse_mode="HTML", reply_markup=builder.as_markup())
-    elif post_type == "video":
-        await callback.message.answer_video(video=file_id, caption=f"{header}{text}"[:1024], parse_mode="HTML", reply_markup=builder.as_markup())
-    elif post_type == "document":
-        await callback.message.answer_document(document=file_id, caption=f"{header}{text}"[:1024], parse_mode="HTML", reply_markup=builder.as_markup())
-    elif post_type == "audio":
-        await callback.message.answer_audio(audio=file_id, caption=f"{header}{text}"[:1024], parse_mode="HTML", reply_markup=builder.as_markup())
+    await callback.message.answer(header, parse_mode="HTML", reply_markup=builder.as_markup())
 
 
-# Back to scheduled posts list callback
 @router.callback_query(F.data == "back_to_scheduled_posts")
 async def back_to_scheduled_posts_callback(callback: CallbackQuery):
     await callback.message.delete()
-    # Trigger the list handler logic again
     await scheduled_posts_list_handler(callback.message)
     await callback.answer()
 
 
-# Callback to enter text editing state
-@router.callback_query(F.data.startswith("edit_post:"))
-async def edit_post_callback(callback: CallbackQuery, state: FSMContext):
-    post_id = callback.data.split(":")[1]
-    
-    # Verify post exists
-    post = await db.get_post(post_id)
-    if not post:
-        await callback.answer("❌ Post topilmadi!", show_alert=True)
-        return
-        
-    await state.set_state(AdminStates.AwaitingNewPostText)
-    await state.update_data(editing_post_id=post_id)
-    
-    await callback.answer()
-    await callback.message.answer(
-        "✏️ Yangi post matnini yuboring (HTML formatlash qo'llab-quvvatlanadi):",
-        reply_markup=kb.get_cancel_keyboard()
-    )
-
-
-# Message handler to process editing the post text
-@router.message(AdminStates.AwaitingNewPostText)
-async def edit_post_text_process(message: Message, state: FSMContext):
-    data = await state.get_data()
-    post_id = data.get("editing_post_id")
-    
-    new_text = message.html_text or message.text or ""
-    
-    # Update post text and caption in MongoDB
-    await db.get_posts_col().update_one(
-        {"post_id": post_id},
-        {"$set": {"text": new_text, "caption": new_text}}
-    )
-    
-    await state.clear()
-    
-    global_pause = await db.get_global_setting("global_pause", False)
-    await message.answer(
-        "✅ Yangi matn muvaffaqiyatli saqlandi. Post yuborilayotganda yangi matn chop etiladi.",
-        reply_markup=kb.get_admin_menu(global_pause)
-    )
-
-
-# Callback to prompt delete confirmation
-@router.callback_query(F.data.startswith("confirm_delete_post:"))
-async def confirm_delete_post_callback(callback: CallbackQuery):
-    post_id = callback.data.split(":")[1]
-    
+@router.callback_query(F.data.startswith("confirm_delete_batch:"))
+async def confirm_delete_batch_callback(callback: CallbackQuery):
+    batch_id = callback.data.split(":")[1]
     builder = InlineKeyboardBuilder()
     builder.row(
-        InlineKeyboardButton(text="✅ Ha", callback_data=f"delete_post:{post_id}"),
-        InlineKeyboardButton(text="❌ Yo'q", callback_data=f"cancel_delete_post:{post_id}")
+        InlineKeyboardButton(text="✅ Ha", callback_data=f"delete_batch:{batch_id}"),
+        InlineKeyboardButton(text="❌ Yo'q", callback_data=f"cancel_delete_batch:{batch_id}")
     )
-    
     await callback.answer()
     
-    confirm_text = "⚠️ Haqiqatan ham ushbu rejalashtirilgan postni o'chirishni xohlaysizmi?"
+    confirm_text = "⚠️ Haqiqatan ham ushbu to'plamni va uning ichidagi barcha postlarni o'chirishni xohlaysizmi?"
     if callback.message.text:
         await callback.message.edit_text(confirm_text, reply_markup=builder.as_markup())
     else:
         await callback.message.edit_caption(caption=confirm_text, reply_markup=builder.as_markup())
 
 
-# Callback to cancel delete
-@router.callback_query(F.data.startswith("cancel_delete_post:"))
-async def cancel_delete_post_callback(callback: CallbackQuery):
-    post_id = callback.data.split(":")[1]
+@router.callback_query(F.data.startswith("cancel_delete_batch:"))
+async def cancel_delete_batch_callback(callback: CallbackQuery):
+    batch_id = callback.data.split(":")[1]
     await callback.message.delete()
-    # Go back to previewing the post
-    # Build a simulated callback query to call select_post_callback
-    callback.data = f"select_post:{post_id}"
-    await select_post_callback(callback)
+    callback.data = f"select_batch:{batch_id}"
+    await select_batch_callback(callback)
 
 
-# Callback to execute delete post
-@router.callback_query(F.data.startswith("delete_post:"))
-async def delete_post_callback(callback: CallbackQuery):
-    post_id = callback.data.split(":")[1]
+@router.callback_query(F.data.startswith("delete_batch:"))
+async def delete_batch_callback(callback: CallbackQuery):
+    batch_id = callback.data.split(":")[1]
     
-    # 1. Delete from MongoDB
-    await db.delete_post(post_id)
-    
-    # 2. Cancel scheduler jobs (posting + reminders)
+    cursor = db.get_posts_col().find({"batch_id": batch_id})
+    posts = await cursor.to_list(length=1000)
     from services.scheduler import cancel_post_jobs
-    cancel_post_jobs(post_id)
     
-    await callback.answer("🗑 Post o'chirildi.", show_alert=True)
+    for p in posts:
+        cancel_post_jobs(p["post_id"])
+        await db.delete_post(p["post_id"])
+        
+    await db.delete_batch(batch_id)
+    
+    await callback.answer("🗑 To'plam o'chirildi.", show_alert=True)
     await callback.message.delete()
 
 

@@ -29,14 +29,51 @@ router.message.filter(is_admin_filter)
 
 # --- QUEUE PREVIEW ---
 
-@router.message(F.text == "👀 Navbatni ko'rish")
+@router.message(F.text == "📊 Navbatni ko'rish")
 async def preview_queue_start(message: Message):
-    channels = await db.get_all_channels()
-    if not channels:
-        await message.answer("❌ Hali birorta kanal qo'shilmagan. Avval kanallarni boshqarish bo'limidan kanal qo'shing.")
+    await send_queue_page(message, 1)
+
+@router.callback_query(F.data.startswith("queue_page:"))
+async def preview_queue_page(callback: CallbackQuery):
+    page = int(callback.data.split(":")[1])
+    await send_queue_page(callback.message, page, is_edit=True)
+    await callback.answer()
+
+async def send_queue_page(message: Message, page: int, is_edit: bool = False):
+    pending = await db.get_pending_posts()
+    
+    if not pending:
+        text = "📊 Hali birorta post rejalashtirilmagan."
+        if is_edit:
+            await message.edit_text(text)
+        else:
+            await message.answer(text)
         return
         
-    preview_msg = "👀 <b>Navbatdagi Rejalashtirilgan Postlar (Kanal kesimida):</b>\n\n"
+    from services.scheduler import timezone
+    sorted_posts = []
+    for post in pending:
+        t = post.get("scheduled_time")
+        if t:
+            if t.tzinfo is None:
+                t = timezone.localize(t)
+            sorted_posts.append((t, post))
+            
+    sorted_posts.sort(key=lambda x: x[0])
+    
+    per_page = 10
+    total_pages = (len(sorted_posts) + per_page - 1) // per_page
+    if page < 1:
+        page = 1
+    if page > total_pages:
+        page = total_pages
+        
+    start_idx = (page - 1) * per_page
+    end_idx = start_idx + per_page
+    page_posts = sorted_posts[start_idx:end_idx]
+    
+    preview_msg = f"📊 <b>Umumiy navbatdagi postlar (Sahifa {page}/{total_pages}):</b>\n\n"
+    
     post_types_uz = {
         "photo": "Rasm",
         "video": "Video",
@@ -45,41 +82,43 @@ async def preview_queue_start(message: Message):
         "text": "Matn"
     }
     
-    for ch in channels:
-        ch_id = ch["channel_id"]
-        queue = await db.get_queue_preview(ch_id, limit=3)
+    for i, (sched_time, post) in enumerate(page_posts, start_idx + 1):
+        ch_id = post["target_channel"]
+        channel = await db.get_channel(ch_id)
+        ch_name = channel["name"] if channel else f"ID: {ch_id}"
         
-        preview_msg += f"📢 <b>Kanal: {ch['name']}</b> (<code>{ch_id}</code>)\n"
-        if not queue:
-            preview_msg += "  <i>Kutilayotgan postlar mavjud emas.</i>\n\n"
-            continue
-            
-        for i, post in enumerate(queue, 1):
-            scheduled_time = post["scheduled_time"]
-            if scheduled_time.tzinfo is None:
-                scheduled_time = timezone.localize(scheduled_time)
-            
-            # Format time beautifully
-            time_str = scheduled_time.strftime("%Y-%m-%d %H:%M:%S")
-            
-            clean_text = re.sub(r'<[^>]+>', '', post["text"])
-            text_snippet = clean_text[:60] + "..." if len(clean_text) > 60 else clean_text
-            if not text_snippet.strip():
-                p_type = post["type"]
-                type_uz = post_types_uz.get(p_type, p_type.upper())
-                text_snippet = f"[Fayl: {type_uz}]"
-                
+        time_str = sched_time.strftime("%d.%m.%Y %H:%M:%S")
+        
+        clean_text = re.sub(r'<[^>]+>', '', post["text"])
+        text_snippet = clean_text[:60] + "..." if len(clean_text) > 60 else clean_text
+        if not text_snippet.strip():
             p_type = post["type"]
             type_uz = post_types_uz.get(p_type, p_type.upper())
-            preview_msg += (
-                f"  {i}. ID: <code>{post['post_id']}</code>\n"
-                f"     Turi: <b>{type_uz}</b>\n"
-                f"     Vaqt: <code>{time_str}</code>\n"
-                f"     Matn: <i>{text_snippet}</i>\n"
-            )
-        preview_msg += "\n"
+            text_snippet = f"[Fayl: {type_uz}]"
+            
+        preview_msg += (
+            f"<b>{i}. Kanal: {ch_name}</b>\n"
+            f"Vaqt: <code>{time_str}</code>\n"
+            f"Matn: <i>{text_snippet}</i>\n"
+            f"---\n"
+        )
         
-    await message.answer(preview_msg, parse_mode="HTML")
+    from aiogram.utils.keyboard import InlineKeyboardBuilder
+    from aiogram.types import InlineKeyboardButton
+    builder = InlineKeyboardBuilder()
+    row = []
+    if page > 1:
+        row.append(InlineKeyboardButton(text="⬅️ Oldingi", callback_data=f"queue_page:{page-1}"))
+    if page < total_pages:
+        row.append(InlineKeyboardButton(text="Keyingi ➡️", callback_data=f"queue_page:{page+1}"))
+        
+    if row:
+        builder.row(*row)
+        
+    if is_edit:
+        await message.edit_text(preview_msg, parse_mode="HTML", reply_markup=builder.as_markup())
+    else:
+        await message.answer(preview_msg, parse_mode="HTML", reply_markup=builder.as_markup())
 
 
 # --- POST CREATION FLOW ---
@@ -170,6 +209,8 @@ async def process_forwarded_posts(message: Message, state: FSMContext):
     # Append post metadata
     temp_batch.append({
         "message_id": message.message_id,
+        "original_chat_id": message.chat.id,
+        "original_message_id": message.message_id,
         "file_id": file_id,
         "media_type": media_type,
         "caption": caption
@@ -182,7 +223,6 @@ async def process_forwarded_posts(message: Message, state: FSMContext):
 async def ingestion_done_process(message: Message, state: FSMContext):
     data = await state.get_data()
     temp_batch = data.get("temp_batch", [])
-    target_channel = data.get("target_channel")
     
     if not temp_batch:
         await message.answer("❌ Hech qanday post yuborilmadi! Kamida bitta post yuborishingiz kerak.")
@@ -191,11 +231,44 @@ async def ingestion_done_process(message: Message, state: FSMContext):
     # Sort the cached temp_batch explicitly by Telegram's native message.message_id
     temp_batch.sort(key=lambda x: x["message_id"])
     
-    # Generate unique batch ID
-    batch_id = str(uuid.uuid4())
+    await state.update_data(temp_batch=temp_batch)
+    await state.set_state(PostCreationStates.waiting_for_batch_name)
     
-    # Update FSM state data
-    await state.update_data(temp_batch=temp_batch, batch_id=batch_id)
+    await message.answer(
+        "📝 Ushbu postlar to'plami uchun nom kiriting (masalan: <i>Kechki yangiliklar</i> yoki <i>Reklama kampaniyasi</i>):",
+        reply_markup=kb.get_cancel_keyboard(),
+        parse_mode="HTML"
+    )
+
+@router.message(PostCreationStates.waiting_for_batch_name)
+async def batch_name_process(message: Message, state: FSMContext):
+    batch_name = message.text.strip()
+    await state.update_data(batch_name=batch_name)
+    
+    # Keyboard for Yes/No link stripping
+    builder = ReplyKeyboardBuilder()
+    builder.row(KeyboardButton(text="✅ Ha (Havolalarni olib tashlash)"))
+    builder.row(KeyboardButton(text="❌ Yo'q (Shunday qoldirish)"))
+    builder.row(KeyboardButton(text="❌ Bekor qilish"))
+    
+    await state.set_state(PostCreationStates.waiting_for_link_stripping)
+    await message.answer(
+        "🔗 Post(lar) ichidagi barcha Telegram havolalarini va username (@username) qatorlarini o'chirib tashlashni xohlaysizmi?",
+        reply_markup=builder.as_markup(resize_keyboard=True)
+    )
+
+@router.message(PostCreationStates.waiting_for_link_stripping)
+async def link_stripping_process(message: Message, state: FSMContext):
+    text = message.text
+    if text == "✅ Ha (Havolalarni olib tashlash)":
+        remove_links = True
+    elif text == "❌ Yo'q (Shunday qoldirish)":
+        remove_links = False
+    else:
+        await message.answer("Iltimos, tugmalardan birini tanlang.")
+        return
+        
+    await state.update_data(remove_links=remove_links)
     await state.set_state(PostCreationStates.waiting_for_custom_footer)
     
     await message.answer(
@@ -203,7 +276,6 @@ async def ingestion_done_process(message: Message, state: FSMContext):
         reply_markup=kb.get_footer_skip_keyboard(),
         parse_mode="HTML"
     )
-
 
 @router.message(PostCreationStates.waiting_for_custom_footer)
 async def custom_footer_process(message: Message, state: FSMContext):
@@ -218,7 +290,8 @@ async def custom_footer_process(message: Message, state: FSMContext):
     data = await state.get_data()
     temp_batch = data.get("temp_batch", [])
     target_channel = data.get("target_channel")
-    batch_id = data.get("batch_id")
+    
+    batch_id = str(uuid.uuid4())
     
     post_ids = []
     # Save the posts with the custom footer to MongoDB as drafts
@@ -234,11 +307,13 @@ async def custom_footer_process(message: Message, state: FSMContext):
             caption=item["caption"],
             media_type=item["media_type"],
             batch_id=batch_id,
-            custom_footer=custom_footer
+            custom_footer=custom_footer,
+            original_chat_id=item.get("original_chat_id"),
+            original_message_id=item.get("original_message_id")
         )
         post_ids.append(post_id)
         
-    await state.update_data(temp_batch=[], post_ids=post_ids, custom_footer=custom_footer)
+    await state.update_data(temp_batch=[], post_ids=post_ids, custom_footer=custom_footer, batch_id=batch_id)
     
     await state.set_state(PostCreationStates.waiting_for_schedule_mode)
     await message.answer(
@@ -418,6 +493,24 @@ async def reminders_process(message: Message, state: FSMContext):
         # Register in APScheduler (only if status is pending)
         if status == "pending" and scheduled_time is not None:
             schedule_post_jobs(post_id, scheduled_time, reminders)
+            
+    # Save batch to DB
+    batch_id = data.get("batch_id")
+    batch_name = data.get("batch_name", "Nomsiz to'plam")
+    remove_links = data.get("remove_links", False)
+    custom_footer = data.get("custom_footer", None)
+    target_channel = data.get("target_channel")
+    
+    await db.create_batch(
+        batch_id=batch_id,
+        name=batch_name,
+        channel_id=target_channel,
+        schedule_mode=mode,
+        schedule_time=schedule_config,
+        footer_text=custom_footer,
+        remove_links=remove_links,
+        status="active"
+    )
             
     await state.clear()
     

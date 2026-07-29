@@ -83,57 +83,88 @@ async def send_scheduled_post_job(post_id: str):
     file_id = post["file_id"]
     text = post["text"]
     
-    # 1. Fetch channel and append custom footer if present
+    # 1. Fetch channel and footer
     channel = await db.get_channel(channel_id)
     footer = channel.get("footer_text", "") if channel else ""
     custom_footer = post.get("custom_footer") or ""
-    
-    final_text = text
     target_footer = custom_footer or footer
+    
+    # 2. Fetch batch to get remove_links setting
+    batch_id = post.get("batch_id")
+    remove_links = False
+    if batch_id:
+        batch = await db.get_batch(batch_id)
+        if batch:
+            remove_links = batch.get("remove_links", False)
+            
+    final_text = text or ""
+    if remove_links:
+        import re
+        final_text = re.sub(r'^.*(?:t\.me/|telegram\.me/|@\w+).*$\n?', '', final_text, flags=re.MULTILINE)
+        
     if target_footer:
-        if final_text:
+        if final_text.strip():
             final_text = f"{final_text}\n\n{target_footer}"
         else:
             final_text = target_footer
             
-    # 3. Publish the post based on media type
+    # Check if we can use copy_message (i.e. no modifications required)
+    is_modified = remove_links or bool(target_footer)
+    orig_chat = post.get("original_chat_id")
+    orig_msg = post.get("original_message_id")
+    
     sent_msg = None
     try:
-        if post_type == "text":
-            sent_msg = await _bot.send_message(
-                chat_id=channel_id,
-                text=final_text,
-                parse_mode="HTML",
-                disable_web_page_preview=False
-            )
-        elif post_type == "photo":
-            sent_msg = await _bot.send_photo(
-                chat_id=channel_id,
-                photo=file_id,
-                caption=final_text,
-                parse_mode="HTML"
-            )
-        elif post_type == "video":
-            sent_msg = await _bot.send_video(
-                chat_id=channel_id,
-                video=file_id,
-                caption=final_text,
-                parse_mode="HTML"
-            )
-        elif post_type == "document":
-            sent_msg = await _bot.send_document(
-                chat_id=channel_id,
-                document=file_id,
-                caption=final_text,
-                parse_mode="HTML"
-            )
-        elif post_type == "audio":
-            sent_msg = await _bot.send_audio(
-                chat_id=channel_id,
-                audio=file_id,
-                caption=final_text,
-                parse_mode="HTML"
-            )
+        if not is_modified and orig_chat and orig_msg:
+            # Send as raw copy to preserve all tg-emojis perfectly
+            try:
+                sent_msg = await _bot.copy_message(
+                    chat_id=channel_id,
+                    from_chat_id=orig_chat,
+                    message_id=orig_msg
+                )
+            except Exception as e:
+                logger.warning(f"Failed to copy message {orig_msg} from {orig_chat}: {e}. Falling back to normal send.")
+                # We will fall back to normal send below if sent_msg is still None
+                pass
+
+        if not sent_msg:
+            # Fallback to standard sending with parsed HTML
+            if post_type == "text":
+                sent_msg = await _bot.send_message(
+                    chat_id=channel_id,
+                    text=final_text,
+                    parse_mode="HTML",
+                    disable_web_page_preview=False
+                )
+            elif post_type == "photo":
+                sent_msg = await _bot.send_photo(
+                    chat_id=channel_id,
+                    photo=file_id,
+                    caption=final_text,
+                    parse_mode="HTML"
+                )
+            elif post_type == "video":
+                sent_msg = await _bot.send_video(
+                    chat_id=channel_id,
+                    video=file_id,
+                    caption=final_text,
+                    parse_mode="HTML"
+                )
+            elif post_type == "document":
+                sent_msg = await _bot.send_document(
+                    chat_id=channel_id,
+                    document=file_id,
+                    caption=final_text,
+                    parse_mode="HTML"
+                )
+            elif post_type == "audio":
+                sent_msg = await _bot.send_audio(
+                    chat_id=channel_id,
+                    audio=file_id,
+                    caption=final_text,
+                    parse_mode="HTML"
+                )
             
         if sent_msg:
             schedule_config = post.get("schedule_config", {})

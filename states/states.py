@@ -22,6 +22,8 @@ class PostCreationStates(StatesGroup):
     # Ingestion flow
     waiting_for_channel = State()
     waiting_for_media_batch = State()
+    waiting_for_batch_name = State()
+    waiting_for_link_stripping = State()
     waiting_for_custom_footer = State()
     
     # Scheduling configuration
