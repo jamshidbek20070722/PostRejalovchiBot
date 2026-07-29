@@ -253,8 +253,10 @@ async def batch_name_process(message: Message, state: FSMContext):
     
     await state.set_state(PostCreationStates.waiting_for_link_stripping)
     await message.answer(
-        "🔗 Post(lar) ichidagi barcha Telegram havolalarini va username (@username) qatorlarini o'chirib tashlashni xohlaysizmi?",
-        reply_markup=builder.as_markup(resize_keyboard=True)
+        "🔗 Post(lar) ichidagi barcha Telegram havolalarini va username (@username) qatorlarini o'chirib tashlashni xohlaysizmi?\n\n"
+        "⚠️ <b>Diqqat:</b> Agar havolalarni o'chirishni tanlasangiz va kanalingiz Telegram Premium 4-darajaga (Level 4) ega bo'lmasa, barcha <b>Premium Emojilar</b> oddiy emojilarga aylanadi. Ularni saqlab qolish uchun <b>❌ Yo'q</b> ni tanlang.",
+        reply_markup=builder.as_markup(resize_keyboard=True),
+        parse_mode="HTML"
     )
 
 @router.message(PostCreationStates.waiting_for_link_stripping)
@@ -272,7 +274,8 @@ async def link_stripping_process(message: Message, state: FSMContext):
     await state.set_state(PostCreationStates.waiting_for_custom_footer)
     
     await message.answer(
-        "Ushbu rejalashtirilayotgan postlar to'plami uchun maxsus footer (matn tagidagi havola/reklama) qo'shishni xohlaysizmi? Footer matnini yuboring yoki o'tkazib yuborish uchun /skip bosing.",
+        "Ushbu rejalashtirilayotgan postlar to'plami uchun maxsus footer (matn tagidagi havola/reklama) qo'shishni xohlaysizmi? Footer matnini yuboring yoki o'tkazib yuborish uchun <b>⏭️ O'tkazib yuborish</b> tugmasini bosing.\n\n"
+        "⚠️ <b>Diqqat:</b> Maxsus taglavha qo'shilsa va kanalingiz 4-darajaga ega bo'lmasa, <b>Premium Emojilar</b> oddiy emojilarga aylanadi. Ularni saqlab qolish uchun <b>⏭️ O'tkazib yuborish</b> ni tanlang.",
         reply_markup=kb.get_footer_skip_keyboard(),
         parse_mode="HTML"
     )

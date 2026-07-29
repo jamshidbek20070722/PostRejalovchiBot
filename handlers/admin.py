@@ -417,7 +417,8 @@ async def update_footer_channel_select(message: Message, state: FSMContext):
     await message.answer(
         f"Kanal: <b>{channel['name']}</b>\n{current_footer_str}\n\n"
         "Yangi taglavha matnini yuboring (HTML formatlash qo'llab-quvvatlanadi). "
-        "Taglavhani o'chirish uchun <code>none</code> deb yozing.",
+        "Taglavhani o'chirish uchun <code>none</code> deb yozing.\n\n"
+        "⚠️ <b>Diqqat:</b> Agar xabarga taglavha qo'shilsa va kanalingiz Telegram Premium 4-darajaga (Level 4) ega bo'lmasa, postdagi va taglavhadagi barcha <b>Premium Emojilar</b> oddiy emojilarga aylanib qoladi. Premium emojilarni saqlab qolish uchun kanalingizni 4-darajaga ko'tarishingiz yoki taglavhani <code>none</code> qilib o'chirishingiz zarur.",
         reply_markup=kb.get_cancel_keyboard(),
         parse_mode="HTML"
     )
